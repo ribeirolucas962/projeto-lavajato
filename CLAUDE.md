@@ -6,6 +6,16 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
 
 ---
 
+## Repositório
+
+- GitHub (privado): https://github.com/ribeirolucas962/projeto-lavajato
+- Branch principal: `main`.
+- **Credenciais NÃO são versionadas.** Ao clonar, copie `.env.example` para `.env` e
+  preencha a senha do banco. O `conexao.py` lê as variáveis do `.env` (`DB_HOST`,
+  `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`).
+- Nota Windows: este ambiente precisou de `git config --global http.sslBackend schannel`
+  para o push HTTPS funcionar (erro de certificado SSL com o backend OpenSSL).
+
 ## Banco de dados
 
 - **SGBD:** PostgreSQL 16, em `localhost:5432`.
