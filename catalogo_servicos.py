@@ -1,0 +1,403 @@
+"""
+Módulo de Catálogo de Serviços e Preços
+Sistema: Lava-Jato
+Autor: RINEAL Analytics
+
+CRUD da tabela servico (catálogo de serviços) + gestão da matriz de preços
+em servico_preco (um preço por combinação serviço x categoria de porte).
+"""
+
+from conexao import conectar
+
+
+# ================================================================
+# CRUD DE SERVIÇO
+# ================================================================
+
+def inserir_servico(nome, descricao=None, tempo_medio_min=None):
+    """
+    Insere um novo serviço no catálogo.
+    Retorna o id_servico criado, ou None em caso de erro.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            INSERT INTO servico (nome, descricao, tempo_medio_min)
+            VALUES (%s, %s, %s)
+            RETURNING id_servico;
+            """,
+            (nome, descricao, tempo_medio_min)
+        )
+        id_servico = cursor.fetchone()[0]
+        conexao.commit()
+        return id_servico
+
+    except Exception as erro:
+        print(f"Erro ao inserir serviço: {erro}")
+        conexao.rollback()
+        return None
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def buscar_servicos(termo=None, apenas_ativos=True):
+    """
+    Busca serviços pelo nome (busca parcial).
+    Se termo for None, retorna todos os serviços.
+    """
+    conexao = conectar()
+    if not conexao:
+        return []
+
+    try:
+        cursor = conexao.cursor()
+
+        query = """
+            SELECT id_servico, nome, descricao, tempo_medio_min, ativo
+            FROM servico
+            WHERE 1=1
+        """
+        parametros = []
+
+        if apenas_ativos:
+            query += " AND ativo = TRUE"
+
+        if termo:
+            query += " AND nome ILIKE %s"
+            parametros.append(f"%{termo}%")
+
+        query += " ORDER BY nome;"
+
+        cursor.execute(query, parametros)
+        return cursor.fetchall()
+
+    except Exception as erro:
+        print(f"Erro ao buscar serviços: {erro}")
+        return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def buscar_servico_por_id(id_servico):
+    """
+    Busca um único serviço pelo id_servico.
+    Retorna uma tupla com os dados, ou None se não encontrado.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT id_servico, nome, descricao, tempo_medio_min, ativo
+            FROM servico
+            WHERE id_servico = %s;
+            """,
+            (id_servico,)
+        )
+        return cursor.fetchone()
+
+    except Exception as erro:
+        print(f"Erro ao buscar serviço: {erro}")
+        return None
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def editar_servico(id_servico, nome=None, descricao=None, tempo_medio_min=None):
+    """
+    Atualiza os dados de um serviço existente.
+    Apenas os campos informados (diferentes de None) são atualizados.
+    Retorna True se a atualização foi bem-sucedida, False caso contrário.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            UPDATE servico
+            SET nome = COALESCE(%s, nome),
+                descricao = COALESCE(%s, descricao),
+                tempo_medio_min = COALESCE(%s, tempo_medio_min),
+                atualizado_em = NOW()
+            WHERE id_servico = %s;
+            """,
+            (nome, descricao, tempo_medio_min, id_servico)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except Exception as erro:
+        print(f"Erro ao editar serviço: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def desativar_servico(id_servico):
+    """
+    Desativa um serviço (soft delete) — não exclui o registro,
+    apenas marca ativo = FALSE para preservar o histórico de comandas.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            "UPDATE servico SET ativo = FALSE, atualizado_em = NOW() WHERE id_servico = %s;",
+            (id_servico,)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except Exception as erro:
+        print(f"Erro ao desativar serviço: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def reativar_servico(id_servico):
+    """
+    Reativa um serviço que havia sido desativado.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            "UPDATE servico SET ativo = TRUE, atualizado_em = NOW() WHERE id_servico = %s;",
+            (id_servico,)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except Exception as erro:
+        print(f"Erro ao reativar serviço: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+# ================================================================
+# GESTÃO DE PREÇOS (matriz servico x categoria)
+# ================================================================
+
+def definir_preco(id_servico, id_categoria, preco):
+    """
+    Define (ou atualiza) o preço de um serviço para uma categoria de porte.
+    Faz UPSERT: insere se não existir, atualiza se já existir.
+    Retorna True em caso de sucesso, False caso contrário.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            INSERT INTO servico_preco (id_servico, id_categoria, preco)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (id_servico, id_categoria)
+            DO UPDATE SET preco = EXCLUDED.preco;
+            """,
+            (id_servico, id_categoria, preco)
+        )
+        conexao.commit()
+        return True
+
+    except Exception as erro:
+        print(f"Erro ao definir preço: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def buscar_preco(id_servico, id_categoria):
+    """
+    Retorna o preço (Decimal) de um serviço para uma categoria de porte,
+    ou None se ainda não houver preço definido para essa combinação.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT preco
+            FROM servico_preco
+            WHERE id_servico = %s AND id_categoria = %s;
+            """,
+            (id_servico, id_categoria)
+        )
+        resultado = cursor.fetchone()
+        return resultado[0] if resultado else None
+
+    except Exception as erro:
+        print(f"Erro ao buscar preço: {erro}")
+        return None
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def remover_preco(id_servico, id_categoria):
+    """
+    Remove o preço de um serviço para uma categoria de porte específica.
+    Retorna True se algo foi removido, False caso contrário.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            "DELETE FROM servico_preco WHERE id_servico = %s AND id_categoria = %s;",
+            (id_servico, id_categoria)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except Exception as erro:
+        print(f"Erro ao remover preço: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def precos_do_servico(id_servico):
+    """
+    Lista os preços de um serviço em todas as categorias que já têm preço.
+    Retorna tuplas (id_categoria, nome_categoria, preco), ordenadas por porte.
+    """
+    conexao = conectar()
+    if not conexao:
+        return []
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT cat.id_categoria, cat.nome, sp.preco
+            FROM servico_preco sp
+            JOIN categoria_veiculo cat ON cat.id_categoria = sp.id_categoria
+            WHERE sp.id_servico = %s
+            ORDER BY cat.ordem, cat.nome;
+            """,
+            (id_servico,)
+        )
+        return cursor.fetchall()
+
+    except Exception as erro:
+        print(f"Erro ao buscar preços do serviço: {erro}")
+        return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def tabela_de_precos(apenas_ativos=True):
+    """
+    Retorna a tabela de preços vigente: cada linha é uma combinação
+    (serviço, categoria) com preço definido.
+    Tuplas: (id_servico, nome_servico, id_categoria, nome_categoria, preco).
+    Serve de base para exibir a matriz serviço x porte na interface.
+    """
+    conexao = conectar()
+    if not conexao:
+        return []
+
+    try:
+        cursor = conexao.cursor()
+
+        query = """
+            SELECT s.id_servico, s.nome, cat.id_categoria, cat.nome, sp.preco
+            FROM servico_preco sp
+            JOIN servico s            ON s.id_servico   = sp.id_servico
+            JOIN categoria_veiculo cat ON cat.id_categoria = sp.id_categoria
+            WHERE 1=1
+        """
+        if apenas_ativos:
+            query += " AND s.ativo = TRUE"
+
+        query += " ORDER BY s.nome, cat.ordem, cat.nome;"
+
+        cursor.execute(query)
+        return cursor.fetchall()
+
+    except Exception as erro:
+        print(f"Erro ao montar tabela de preços: {erro}")
+        return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+# ================================================================
+# TESTE RÁPIDO (rode este arquivo diretamente para testar o CRUD)
+# ================================================================
+if __name__ == "__main__":
+    print("Inserindo serviço de teste...")
+    id_serv = inserir_servico(
+        nome="Lavagem Simples",
+        descricao="Lavagem externa com shampoo automotivo",
+        tempo_medio_min=30
+    )
+    print(f"Serviço inserido com id: {id_serv}")
+
+    if id_serv:
+        # Define preços para Moto (1) e Pequeno (2) — ids das categorias seed
+        print("\nDefinindo preços por porte...")
+        definir_preco(id_serv, 1, 20.00)   # Moto
+        definir_preco(id_serv, 2, 35.00)   # Pequeno
+        definir_preco(id_serv, 2, 40.00)   # Pequeno de novo -> deve ATUALIZAR para 40
+
+        print("Preços do serviço:")
+        for p in precos_do_servico(id_serv):
+            print(" ", p)
+
+    print("\nTabela de preços vigente:")
+    for linha in tabela_de_precos():
+        print(" ", linha)

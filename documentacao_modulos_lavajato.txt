@@ -1,0 +1,321 @@
+================================================================================
+                    DOCUMENTAÇÃO DE MÓDULOS DO SISTEMA
+                         SISTEMA DE GESTÃO PARA LAVA-JATO
+================================================================================
+
+Cliente: Truck center lavação 
+Data: 22/06/2026
+Versão do documento: 1.0
+Responsável técnico: Lucas Ribeiro Nepomuceno de Almeida (RINEAL Analytics)
+
+--------------------------------------------------------------------------------
+OBJETIVO DESTE DOCUMENTO
+--------------------------------------------------------------------------------
+Apresentar de forma clara todos os módulos que terá  no sistema de gestão
+do lava-jato, para aprovação do cliente antes do início do desenvolvimento.
+
+Cada módulo está descrito com sua finalidade, os dados que armazena e as
+funcionalidades que oferece. Ao final, o cliente pode aprovar o documento
+como está ou solicitar alterações, inclusões ou remoções de itens.
+
+================================================================================
+1. CADASTRO DE CLIENTE
+================================================================================
+FINALIDADE:
+Armazenar os dados de todos os clientes atendidos pelo lava-jato, permitindo
+identificação rápida, histórico de atendimentos e comunicação direta.
+
+DADOS ARMAZENADOS:
+- Nome completo
+- CPF ou CNPJ
+- Telefone / WhatsApp
+- E-mail (opcional)
+- Endereço (opcional)
+- Data de cadastro
+- Observações gerais
+
+FUNCIONALIDADES:
+- Cadastrar, editar e consultar clientes
+- Buscar cliente por nome, telefone ou CPF
+- Visualizar histórico de veículos e atendimentos do cliente
+- Vincular cliente a planos de fidelidade e assinaturas
+
+================================================================================
+2. CADASTRO DE VEÍCULO
+================================================================================
+FINALIDADE:
+Registrar os veículos de cada cliente, possibilitando a aplicação correta da
+tabela de preços conforme o porte do veículo.
+
+DADOS ARMAZENADOS:
+- Placa
+- Marca e modelo
+- Ano
+- Cor
+- Categoria de porte (Pequeno / Médio / Grande / SUV / Caminhonete / Moto)
+- Cliente vinculado
+
+FUNCIONALIDADES:
+- Cadastrar, editar e consultar veículos
+- Vincular veículo a um ou mais clientes (caso aplicável)
+- Consultar histórico de serviços realizados naquele veículo
+
+================================================================================
+3. CATÁLOGO (SERVIÇOS E PREÇOS)
+================================================================================
+FINALIDADE:
+Definir todos os serviços oferecidos pelo lava-jato e seus respectivos preços,
+considerando a variação por porte do veículo.
+
+DADOS ARMAZENADOS:
+- Nome do serviço (ex.: lavagem simples, lavagem completa, enceramento,
+  higienização interna, polimento, lavagem de motor, cristalização de vidros)
+- Descrição do serviço
+- Tempo médio de execução
+- Tabela de preços por categoria de veículo (matriz serviço x porte)
+
+FUNCIONALIDADES:
+- Cadastrar, editar e desativar serviços
+- Definir e ajustar preços por categoria de veículo
+- Consultar tabela de preços vigente
+
+================================================================================
+4. AGENDAMENTO
+================================================================================
+FINALIDADE:
+Permitir que o cliente marque horário antecipadamente, organizando a fila de
+atendimento e evitando conflitos de horário ou sobrecarga de boxes.
+
+DADOS ARMAZENADOS:
+- Cliente e veículo
+- Serviço(s) desejado(s)
+- Data e hora agendada
+- Duração estimada
+- Box reservado (se aplicável)
+- Status (agendado, confirmado, em espera, em execução, concluído, cancelado,
+  não compareceu)
+- Origem do agendamento (manual, WhatsApp, telefone, app)
+
+FUNCIONALIDADES:
+- Criar, remarcar e cancelar agendamentos
+- Verificar disponibilidade de horário e box antes de confirmar
+- Evitar conflitos (dois agendamentos no mesmo horário e box)
+- Converter agendamento em ordem de serviço na chegada do cliente
+- Enviar lembrete automático ao cliente (integração futura via WhatsApp)
+- Registrar não comparecimento (no-show) para controle de confiabilidade
+
+================================================================================
+5. ORDEM DE SERVIÇO (COMANDA)
+================================================================================
+FINALIDADE:
+Controlar a execução do serviço do início ao fim, desde a chegada do veículo
+até a entrega, com todos os itens cobrados.
+
+DADOS ARMAZENADOS:
+- Número da comanda
+- Cliente e veículo
+- Lista de serviços/itens incluídos
+- Funcionário responsável
+- Horário de entrada, início e finalização
+- Status (aguardando, em execução, finalizado, entregue)
+- Forma de pagamento
+- Valor total calculado
+
+FUNCIONALIDADES:
+- Abrir comanda manualmente ou a partir de um agendamento
+- Adicionar múltiplos serviços a uma mesma comanda
+- Atualizar status em tempo real
+- Calcular valor total automaticamente conforme tabela de preços
+- Emitir recibo/comprovante ao cliente
+- Exibir comandas ativas em painel de fila em tempo real
+
+================================================================================
+6. FUNCIONÁRIO
+================================================================================
+FINALIDADE:
+Gerenciar a equipe que presta os serviços, controlando função, acesso ao
+sistema e, se aplicável, comissionamento.
+
+DADOS ARMAZENADOS:
+- Nome
+- Função (lavador, caixa, gerente)
+- Login e senha de acesso (se houver controle de usuários)
+- Percentual ou valor de comissão por serviço (opcional)
+- Data de admissão
+
+FUNCIONALIDADES:
+- Cadastrar, editar e desativar funcionários
+- Definir nível de acesso ao sistema por função
+- Vincular funcionário às comandas que executou
+- Consultar produtividade por funcionário (quantidade de serviços realizados)
+
+================================================================================
+7. ESTOQUE
+================================================================================
+FINALIDADE:
+Controlar os produtos utilizados na prestação dos serviços, evitando falta de
+material e permitindo cálculo de custo por serviço.
+
+DADOS ARMAZENADOS:
+- Nome do produto (shampoo automotivo, cera, pano, aromatizante, etc.)
+- Quantidade em estoque
+- Unidade de medida
+- Estoque mínimo (para alerta)
+- Custo unitário
+
+FUNCIONALIDADES:
+- Cadastrar, editar e consultar produtos
+- Registrar entradas e saídas de estoque
+- Alertar quando o estoque atingir o nível mínimo
+- Vincular consumo de produto a serviços (opcional, nível avançado)
+
+================================================================================
+8. FORNECEDORES
+================================================================================
+FINALIDADE:
+Manter o cadastro de fornecedores de produtos e materiais utilizados no
+lava-jato, agilizando reposição de estoque.
+
+DADOS ARMAZENADOS:
+- Nome / razão social
+- CNPJ
+- Telefone e e-mail de contato
+- Produtos fornecidos
+- Condições de pagamento
+
+FUNCIONALIDADES:
+- Cadastrar, editar e consultar fornecedores
+- Vincular fornecedor a produtos do estoque
+- Consultar histórico de compras por fornecedor
+
+================================================================================
+9. DESPESA
+================================================================================
+FINALIDADE:
+Registrar todas as saídas financeiras do negócio, permitindo controle de
+custos e cálculo de lucratividade real.
+
+DADOS ARMAZENADOS:
+- Descrição da despesa
+- Categoria (produto, salário, aluguel, energia, manutenção, etc.)
+- Valor
+- Data de vencimento e data de pagamento
+- Fornecedor vinculado (quando aplicável)
+- Forma de pagamento
+
+FUNCIONALIDADES:
+- Cadastrar, editar e consultar despesas
+- Classificar despesas por categoria
+- Consultar total de despesas por período
+- Gerar base para cálculo de lucro (receita - despesa)
+
+================================================================================
+10. CAIXA
+================================================================================
+FINALIDADE:
+Controlar a movimentação financeira diária do lava-jato, com abertura,
+fechamento e conferência de valores.
+
+DADOS ARMAZENADOS:
+- Data de abertura e fechamento do caixa
+- Valor inicial (fundo de caixa)
+- Entradas (pagamentos de comandas)
+- Saídas (despesas pagas no dia)
+- Saldo final
+- Responsável pelo fechamento
+
+FUNCIONALIDADES:
+- Abrir e fechar caixa diariamente
+- Registrar entradas e saídas no período
+- Conferir saldo esperado x saldo real
+- Consultar histórico de fechamentos anteriores
+
+================================================================================
+11. DASHBOARD
+================================================================================
+FINALIDADE:
+Apresentar uma visão gerencial do negócio em tempo real, facilitando decisões
+rápidas e acompanhamento de desempenho.
+
+DADOS APRESENTADOS:
+- Faturamento por dia, semana e mês
+- Serviço mais vendido
+- Ticket médio por atendimento
+- Taxa de retorno de clientes (recorrência)
+- Tempo médio de execução por serviço
+- Horários de maior movimento
+- Comandas em andamento (fila atual)
+
+FUNCIONALIDADES:
+- Visualizar gráficos e indicadores atualizados automaticamente
+- Filtrar por período (dia, semana, mês, personalizado)
+- Exportar relatórios
+
+================================================================================
+12. FIDELIDADE
+================================================================================
+FINALIDADE:
+Incentivar o retorno do cliente por meio de um sistema de pontos ou
+benefícios acumulativos.
+
+DADOS ARMAZENADOS:
+- Cliente vinculado
+- Pontos acumulados
+- Histórico de lavagens realizadas
+- Regras de troca (ex.: a cada 10 lavagens, 1 grátis)
+
+FUNCIONALIDADES:
+- Acumular pontos automaticamente a cada comanda finalizada
+- Consultar saldo de pontos do cliente
+- Resgatar benefícios conforme regra configurada
+- Consultar histórico de resgates
+
+================================================================================
+13. PLANOS E ASSINATURAS
+================================================================================
+FINALIDADE:
+Oferecer pacotes mensais de serviços, garantindo receita recorrente e
+fidelização de clientes frequentes.
+
+DADOS ARMAZENADOS:
+- Nome do plano (ex.: Plano Mensal 4 Lavagens)
+- Serviços inclusos e quantidade permitida por mês
+- Valor da mensalidade
+- Cliente assinante
+- Data de início, vencimento e renovação
+- Quantidade de serviços já utilizados no mês vigente
+
+FUNCIONALIDADES:
+- Cadastrar e editar planos disponíveis
+- Vincular cliente a um plano
+- Controlar uso mensal (quantos serviços já foram utilizados)
+- Alertar sobre vencimento e renovação automática
+- Bloquear uso quando o limite mensal for atingido
+
+================================================================================
+OBSERVAÇÕES FINAIS
+================================================================================
+- Os módulos acima cobrem o fluxo completo do negócio: cadastro, atendimento,
+  controle financeiro e gestão estratégica.
+- Cada módulo pode ser ajustado, removido ou ter funcionalidades adicionadas
+  conforme a necessidade real do dia a dia do lava-jato.
+- Após aprovação deste documento, o desenvolvimento seguirá a ordem definida
+  em conjunto com o cliente.
+
+--------------------------------------------------------------------------------
+APROVAÇÃO DO CLIENTE
+--------------------------------------------------------------------------------
+
+(   ) Aprovo a documentação como apresentada.
+(   ) Solicito alterações (descrever abaixo).
+
+Alterações solicitadas:
+_________________________________________________________________________
+_________________________________________________________________________
+_________________________________________________________________________
+
+Nome do cliente: _________________________________
+Assinatura: ______________________________________
+Data: ___/___/______
+
+================================================================================
