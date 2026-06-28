@@ -1,7 +1,9 @@
 # Sistema de Gestão para Lava-Jato (projeto_daniel)
 
-Sistema de gestão para lava-jato em **Python + psycopg2 + PostgreSQL**.
-Dependências: `psycopg2`, `bcrypt` (hash de senha no módulo funcionário).
+Sistema de gestão para lava-jato em **Python + psycopg2 + PostgreSQL**, com
+interface gráfica em **Flet** (`app.py`).
+Dependências: `psycopg2`, `bcrypt` (hash de senha no módulo funcionário), `flet`
+(interface). Ver `requirements.txt` (`pip install -r requirements.txt`).
 Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida (RINEAL Analytics).
 
 ---
@@ -98,6 +100,9 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - `conexao.py` — conexão única com o banco.
 - `criar_tabelas.sql` / `criar_tabelas.py` — schema e criação das tabelas.
 - `cadastro_cliente.py`, `cadastro_veiculo.py` — módulos já implementados (referência de padrão).
+- `app.py` — **interface gráfica (Flet)**: login + 13 telas reaproveitando os módulos de CRUD.
+  Rodar com `python app.py`. Logo da marca em `imagen/trucka car.png`.
+- `requirements.txt` — dependências (psycopg2, bcrypt, flet).
 - `documentacao_modulos_lavajato.txt` — especificação funcional dos 13 módulos.
 
 ---
@@ -113,6 +118,14 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - **Módulo 11 (Dashboard): ADIADO** por decisão do usuário — será feito junto com o frontend
   (os indicadores viram gráficos). Indicadores previstos: faturamento por período, serviço mais
   vendido, ticket médio, taxa de retorno, tempo médio por serviço, horários de pico, fila atual.
-- **Backend de CRUD essencialmente completo** (12 de 13 módulos). Próxima grande etapa provável:
-  escolher a stack de frontend (desktop CustomTkinter/Flet vs web Flask/FastAPI) e montar as telas
-  reaproveitando as funções dos módulos. `autenticar()` (funcionario) já serve de base p/ login.
+- **Backend de CRUD essencialmente completo** (12 de 13 módulos).
+- **Frontend feito em Flet (`app.py`)** — stack escolhida: Flet (Python puro, `flet==0.85.3`).
+  Login real via `autenticar()` + 13 telas reaproveitando os módulos, sem alterar o backend.
+  Telas com CRUD: Clientes, Veículos, Serviços (+preços por porte), Agendamentos, Comandas,
+  Funcionários, Fornecedores, Estoque (+movimentações), Despesas, Fidelidade, Planos/Assinaturas,
+  Caixa; + Dashboard com KPIs reais. Identidade visual da marca (logo + paleta azul-marinho/azul-claro).
+  - ⚠️ Flet 0.85 tem API nova: `ft.Colors`/`ft.Icons`, `ft.Alignment.CENTER`, `ft.Padding.symmetric`,
+    `ft.BoxFit`, `page.show_dialog()`/`pop_dialog()`, `ft.run(main)`, `ft.Image(src=bytes)`,
+    `TextField(prefix=/suffix=/helper=Control)` (não `*_text`).
+- **Próximos passos possíveis:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
+  executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.

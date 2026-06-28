@@ -1,0 +1,6 @@
+# Dependências do Sistema de Gestão Truck Center Lavação
+# Instale com:  pip install -r requirements.txt
+
+psycopg2==2.9.10     # driver PostgreSQL (backend / conexao.py)
+bcrypt==4.0.1        # hash de senha no módulo funcionário
+flet==0.85.3         # interface gráfica (app.py) — desktop/web em Python
