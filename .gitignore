@@ -16,6 +16,9 @@ env/
 .idea/
 *.swp
 
+# Recibos gerados pelo app
+recibos/
+
 # Sistema operacional
 Thumbs.db
 desktop.ini

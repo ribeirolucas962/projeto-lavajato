@@ -45,7 +45,8 @@ INSERT INTO categoria_veiculo (nome, ordem) VALUES
     ('Médio', 3),
     ('Grande', 4),
     ('SUV', 5),
-    ('Caminhonete', 6)
+    ('Caminhonete', 6),
+    ('Caminhão', 7)
 ON CONFLICT (nome) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS veiculo (
@@ -212,12 +213,27 @@ CREATE TABLE IF NOT EXISTS ordem_servico (
                           CHECK (status IN ('aguardando','em_execucao','finalizado','entregue','cancelado')),
     forma_pagamento  VARCHAR(20),
     valor_total      NUMERIC(10,2) DEFAULT 0 CHECK (valor_total >= 0),
+    -- Financeiro da OS (valor_final e valor_pendente são calculados no app):
+    desconto         NUMERIC(10,2) DEFAULT 0 CHECK (desconto >= 0),
+    acrescimo        NUMERIC(10,2) DEFAULT 0 CHECK (acrescimo >= 0),   -- acréscimo / juros
+    parcelas         SMALLINT      DEFAULT 1 CHECK (parcelas >= 1),
+    valor_pago       NUMERIC(10,2) DEFAULT 0 CHECK (valor_pago >= 0),
+    data_pagamento   DATE,
+    data_vencimento  DATE,
     entrada_em       TIMESTAMP DEFAULT NOW(),
     inicio_em        TIMESTAMP,
     finalizacao_em   TIMESTAMP,
     criado_em        TIMESTAMP DEFAULT NOW(),
     atualizado_em    TIMESTAMP DEFAULT NOW()
 );
+
+-- Upgrade de bancos já existentes: adiciona as colunas financeiras se faltarem.
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS desconto        NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS acrescimo       NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS parcelas        SMALLINT      DEFAULT 1;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS valor_pago      NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS data_pagamento  DATE;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS data_vencimento DATE;
 
 CREATE INDEX IF NOT EXISTS idx_ordem_status  ON ordem_servico(status);
 CREATE INDEX IF NOT EXISTS idx_ordem_cliente ON ordem_servico(id_cliente);

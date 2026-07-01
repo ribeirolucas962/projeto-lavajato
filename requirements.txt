@@ -4,3 +4,4 @@
 psycopg2==2.9.10     # driver PostgreSQL (backend / conexao.py)
 bcrypt==4.0.1        # hash de senha no módulo funcionário
 flet==0.85.3         # interface gráfica (app.py) — desktop/web em Python
+reportlab==4.4.10    # geração de recibo em PDF (comanda)

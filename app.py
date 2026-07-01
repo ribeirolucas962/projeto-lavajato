@@ -8,6 +8,37 @@ Como rodar:
 
 Login: usa funcionario.autenticar(login, senha). Cadastre um funcionário com login/senha
 (ex.: rode `python funcionario.py` uma vez) ou use o botão "Entrar como demonstração".
+
+------------------------------------------------------------------------------
+GUIA DE LEITURA (mapa do arquivo, de cima para baixo)
+------------------------------------------------------------------------------
+1. Paleta/identidade visual (COR_*) e helpers de formatação (brl, fmt_dt, ...).
+2. gerar_recibo_pdf()  -> monta o recibo da comanda em PDF (reportlab).
+3. _faturamento()      -> consulta de dashboard (soma faturamento por período).
+4. main(page)          -> TODA a aplicação vive aqui dentro (closures aninhados):
+     - helpers de UI (abrir/fechar diálogo, aviso, cabeçalho de diálogo);
+     - tela_login();
+     - "shell" principal (sidebar + área de conteúdo) e navegação entre telas;
+     - componentes reutilizáveis (cabecalho, card_kpi, card_tabela);
+     - uma função pagina_*() por tela (Dashboard, Clientes, Veículos, ...);
+     - registrar_paginas() -> mapeia nome do menu -> (ícone, função da tela).
+
+PADRÃO DE CADA TELA (pagina_*): todas seguem a MESMA receita, então entender uma
+(a de Clientes está comentada como referência) é entender todas:
+    montar_linhas()      -> lê do backend e devolve a DataTable (ou aviso de vazio);
+    atualizar()          -> re-renderiza a tabela após uma mudança;
+    confirmar_desativar()-> diálogo de confirmação do soft delete;
+    form_*()             -> diálogo de cadastro/edição (valida e chama o backend);
+    return ft.Column(...)-> layout final da tela (cabeçalho + filtros + tabela).
+
+⚠️ DUAS CONVENÇÕES FRÁGEIS (é aqui que a maioria dos bugs aparece):
+  (a) DESEMPACOTAMENTO POR ÍNDICE: as linhas vêm do backend como TUPLAS e são
+      abertas por posição, ex.: `(idc, nome, cpf, tel, ...) = c`. Se a ordem das
+      colunas no SELECT do módulo mudar, os campos aqui saem trocados SEM erro.
+      Cada tela anota, no loop, o layout da tupla que espera — confira contra o .py.
+  (b) CAPTURA EM CLOSURE DENTRO DE LOOP: nos on_click usamos `lambda e, i=idc: ...`.
+      O `i=idc` "congela" o valor daquela iteração. Sem esse argumento padrão,
+      TODOS os botões usariam o último id do loop (bug clássico de Python).
 """
 
 import os
@@ -84,6 +115,112 @@ def qtd_fmt(v):
         return f"{float(v):g}".replace(".", ",")
     except (TypeError, ValueError):
         return "—"
+
+
+def gerar_recibo_pdf(caminho, ctx):
+    """
+    Gera o recibo de uma comanda em PDF (reportlab) com a identidade da Truck Center.
+    'ctx' é um dict com os dados já formatados. Lança exceção se reportlab faltar.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                    TableStyle, Image)
+    from datetime import datetime as _dt
+
+    NAVY = colors.HexColor("#1B3B6F")
+    styles = getSampleStyleSheet()
+    h = ParagraphStyle("h", parent=styles["Title"], textColor=NAVY, fontSize=18, spaceAfter=2)
+    sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.grey,
+                         fontSize=10, spaceAfter=2)
+    secao = ParagraphStyle("secao", parent=styles["Heading3"], textColor=NAVY,
+                           spaceBefore=12, spaceAfter=4)
+
+    doc = SimpleDocTemplate(caminho, pagesize=A4, topMargin=18 * mm, bottomMargin=18 * mm,
+                            leftMargin=20 * mm, rightMargin=20 * mm,
+                            title=f"Recibo Comanda {ctx['id_ordem']}")
+    elems = []
+
+    if ctx.get("logo") and os.path.exists(ctx["logo"]):
+        try:
+            img = Image(ctx["logo"], width=38 * mm, height=38 * mm)
+            img.hAlign = "CENTER"
+            elems.append(img)
+        except Exception:
+            pass
+    elems.append(Paragraph("Truck Center Lavação", h))
+    elems.append(Paragraph("Recibo de Serviço", sub))
+    elems.append(Spacer(1, 6))
+
+    info = [["Comanda:", f"#{ctx['id_ordem']}", "Data:", ctx['data']],
+            ["Cliente:", ctx['cli_nome'], "", ""],
+            ["Veículo:", ctx['placa'], "", ""]]
+    t_info = Table(info, colWidths=[24 * mm, 70 * mm, 22 * mm, 44 * mm])
+    t_info.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    elems.append(t_info)
+
+    elems.append(Paragraph("Serviços", secao))
+    serv_rows = [["Serviço", "Valor"]] + [[n, brl(p)] for n, p in ctx["itens"]]
+    if len(serv_rows) == 1:
+        serv_rows.append(["(nenhum)", ""])
+    t_serv = Table(serv_rows, colWidths=[120 * mm, 40 * mm])
+    t_serv.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F6FB")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elems.append(t_serv)
+
+    elems.append(Paragraph("Valores", secao))
+    t_val = Table([["Valor Total", brl(ctx['total'])],
+                   ["Desconto", brl(ctx['desconto'])],
+                   ["Acréscimo/Juros", brl(ctx['acrescimo'])],
+                   ["Valor Final", brl(ctx['valor_final'])]],
+                  colWidths=[120 * mm, 40 * mm])
+    t_val.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LINEABOVE", (0, -1), (-1, -1), 0.6, NAVY),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, -1), (-1, -1), NAVY),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    elems.append(t_val)
+
+    elems.append(Paragraph("Pagamento", secao))
+    t_pag = Table([["Forma de pagamento", ctx['forma']],
+                   ["Parcelas", str(ctx['parcelas'])],
+                   ["Valor Pago", brl(ctx['valor_pago'])],
+                   ["Valor Pendente", brl(ctx['valor_pendente'])],
+                   ["Status", ctx['pag_status']],
+                   ["Data do pagamento", ctx['data_pag']],
+                   ["Vencimento", ctx['data_venc']]],
+                  colWidths=[120 * mm, 40 * mm])
+    t_pag.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    elems.append(t_pag)
+
+    elems.append(Spacer(1, 16))
+    elems.append(Paragraph(
+        f"Emitido em {_dt.now().strftime('%d/%m/%Y %H:%M')} — Truck Center Lavação",
+        ParagraphStyle("foot", parent=styles["Normal"], fontSize=8,
+                       textColor=colors.grey, alignment=1)))
+    doc.build(elems)
 
 
 # ================================================================
@@ -244,9 +381,13 @@ def main(page: ft.Page):
     # ============================================================
     # SHELL PRINCIPAL (sidebar + conteúdo)
     # ============================================================
+    # Container onde a tela atual é desenhada (à direita da sidebar). Trocar de
+    # menu só substitui o .content deste container — a sidebar permanece.
     area_conteudo = ft.Container(expand=True, padding=24)
 
-    # Nome -> (ícone, função construtora da tela)
+    # Registro das telas: nome do menu -> (ícone, função que CONSTRÓI a tela).
+    # Preenchido por registrar_paginas() no login. A função é chamada a cada
+    # navegação (a tela é reconstruída do zero, relendo dados frescos do banco).
     paginas = {}
 
     def item_menu(nome, icone, selecionado):
@@ -317,12 +458,16 @@ def main(page: ft.Page):
     sidebar_container = ft.Container()
 
     def navegar(nome):
+        # Clique num item do menu: marca o item, redesenha a sidebar (para o
+        # destaque de selecionado) e reconstrói a tela chamando paginas[nome][1]().
         selecionado_atual["nome"] = nome
         sidebar_container.content = construir_sidebar()
         area_conteudo.content = paginas[nome][1]()
         page.update()
 
     def montar_app():
+        # Chamado logo após o login: troca a tela de login pelo layout principal
+        # (sidebar + conteúdo) e abre a tela inicial (selecionado_atual, "Dashboard").
         registrar_paginas()
         sidebar_container.content = construir_sidebar()
         area_conteudo.content = paginas[selecionado_atual["nome"]][1]()
@@ -334,6 +479,8 @@ def main(page: ft.Page):
     # COMPONENTES REUTILIZÁVEIS
     # ============================================================
     def cabecalho(titulo, subtitulo=None, acao=None):
+        # Título grande + subtítulo opcional à esquerda; 'acao' (ex.: botão "Novo")
+        # vai à direita. Usado no topo de todas as telas.
         col = [ft.Text(titulo, size=26, weight=ft.FontWeight.BOLD)]
         if subtitulo:
             col.append(ft.Text(subtitulo, size=13, color=ft.Colors.GREY_600))
@@ -346,6 +493,7 @@ def main(page: ft.Page):
         return linha
 
     def card_kpi(titulo, valor, icone, cor):
+        # Cartão de indicador do Dashboard: rótulo + número grande + ícone colorido.
         return ft.Container(
             width=250, padding=20, bgcolor=COR_CARD, border_radius=12,
             shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)),
@@ -364,6 +512,8 @@ def main(page: ft.Page):
         )
 
     def card_tabela(titulo, tabela):
+        # "Moldura" branca padrão em volta de uma tabela (título + divisor + corpo
+        # rolável). 'tabela' costuma ser o corpo_tabela dinâmico de cada tela.
         return ft.Container(
             expand=True, padding=20, bgcolor=COR_CARD, border_radius=12,
             shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)),
@@ -378,11 +528,13 @@ def main(page: ft.Page):
     # PÁGINA: DASHBOARD
     # ============================================================
     def pagina_dashboard():
+        # Cada KPI é uma consulta independente ao backend; aqui só contamos/somamos
+        # os resultados. Sem tabela própria — o Dashboard vive só de leitura.
         clientes = mod_cli.buscar_clientes()
         servicos = mod_serv.buscar_servicos()
         comandas_abertas = mod_os.buscar_comandas(somente_abertas=True)
-        abaixo_min = mod_estoque.produtos_abaixo_minimo()
-        caixa = mod_caixa.caixa_aberto()
+        abaixo_min = mod_estoque.produtos_abaixo_minimo()   # produtos no vermelho
+        caixa = mod_caixa.caixa_aberto()                    # None se não há caixa aberto
         fat_hoje = _faturamento("hoje")
         fat_mes = _faturamento("mes")
 
@@ -417,14 +569,24 @@ def main(page: ft.Page):
     # PÁGINA: CLIENTES (CRUD completo — vitrine)
     # ============================================================
     def pagina_clientes():
+        # ===== TELA DE REFERÊNCIA =====
+        # Esta é a tela mais comentada de propósito: todas as outras pagina_*()
+        # seguem exatamente esta estrutura (busca -> montar_linhas -> atualizar ->
+        # confirmar_desativar -> form_* -> return Column). Entenda esta e entendeu
+        # as demais; lá só comentamos o que difere.
+
+        # Campo de busca e checkbox de filtro. Ambos disparam atualizar() no on_change
+        # (ligados mais abaixo), refazendo a consulta ao vivo enquanto o usuário digita.
         campo_busca = ft.TextField(
             hint_text="Buscar por nome ou telefone...", expand=True,
             prefix_icon=ft.Icons.SEARCH, height=44,
         )
         mostrar_inativos = ft.Checkbox(label="Incluir inativos", value=False)
+        # Coluna "viva": seu conteúdo é trocado por atualizar() sem reconstruir a tela.
         corpo_tabela = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
         def montar_linhas():
+            # Lê os clientes do banco conforme o filtro e devolve a DataTable pronta.
             termo = (campo_busca.value or "").strip() or None
             clientes = mod_cli.buscar_clientes(
                 termo=termo, apenas_ativos=not mostrar_inativos.value)
@@ -434,6 +596,8 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum cliente encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for c in clientes:
+                # ⚠️ Ordem da tupla = ordem do SELECT em cadastro_cliente.buscar_clientes().
+                # Se mudar lá, ajuste aqui (senão os campos saem trocados sem erro).
                 (idc, nome, cpf, tel, email, end, obs, ativo) = c
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
@@ -441,6 +605,9 @@ def main(page: ft.Page):
                     content=ft.Text("Ativo" if ativo else "Inativo", size=11,
                                     color=ft.Colors.GREEN_900 if ativo else ft.Colors.GREY_700),
                 )
+                # Cliente ativo -> botão de desativar; inativo -> botão de reativar.
+                # `i=idc` / `cc=c`: congela o valor DESTA iteração no closure (ver nota
+                # (b) no topo do arquivo). Sem isso, todo botão usaria o último cliente.
                 if ativo:
                     acao = ft.IconButton(ft.Icons.BLOCK, icon_color=ft.Colors.RED_400,
                                          tooltip="Desativar",
@@ -456,6 +623,7 @@ def main(page: ft.Page):
                     ft.DataCell(ft.Text(email or "—")),
                     ft.DataCell(badge),
                     ft.DataCell(ft.Row(spacing=0, controls=[
+                        # Editar passa a tupla inteira (cc=c) para o formulário preencher os campos.
                         ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
                                       on_click=lambda e, cc=c: form_cliente(cc)),
                         acao,
@@ -476,13 +644,18 @@ def main(page: ft.Page):
             )
 
         def atualizar(e=None):
+            # Refaz só a tabela (relê o banco) e repinta a tela. Aceita `e=None`
+            # para servir tanto como callback de evento quanto chamada direta.
             corpo_tabela.controls = [montar_linhas()]
             page.update()
 
+        # Liga os filtros à atualização ao vivo.
         campo_busca.on_change = atualizar
         mostrar_inativos.on_change = atualizar
 
         def confirmar_desativar(idc):
+            # Soft delete: pede confirmação e chama desativar_cliente (não apaga o
+            # registro; só marca ativo=FALSE, preservando o histórico).
             def sim(e):
                 mod_cli.desativar_cliente(idc)
                 fechar_dialog()
@@ -499,6 +672,10 @@ def main(page: ft.Page):
             ))
 
         def form_cliente(cliente=None):
+            # Um único formulário serve para CRIAR (cliente=None) e EDITAR (recebe a
+            # tupla vinda da tabela). `editando` alterna rótulos e qual função do
+            # backend é chamada no salvar(). Os índices cliente[1..6] seguem a mesma
+            # ordem da tupla desempacotada em montar_linhas().
             editando = cliente is not None
             f_nome = ft.TextField(label="Nome *", value=cliente[1] if editando else "", width=420)
             f_cpf = ft.TextField(label="CPF / CNPJ", value=(cliente[2] or "") if editando else "", width=200)
@@ -510,6 +687,9 @@ def main(page: ft.Page):
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
+                # Valida o obrigatório, normaliza vazios para None (campos opcionais)
+                # e chama editar/inserir conforme o modo. `strip() or None` evita
+                # gravar strings vazias no lugar de NULL.
                 if not (f_nome.value or "").strip():
                     erro_form.value = "O nome é obrigatório."
                     page.update()
@@ -523,7 +703,7 @@ def main(page: ft.Page):
                     observacoes=(f_obs.value or "").strip() or None,
                 )
                 if editando:
-                    ok = mod_cli.editar_cliente(cliente[0], **vals)
+                    ok = mod_cli.editar_cliente(cliente[0], **vals)  # cliente[0] = id
                 else:
                     ok = mod_cli.inserir_cliente(**vals) is not None
                 fechar_dialog()
@@ -582,7 +762,10 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum serviço encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for s in servicos:
+                # Tupla = SELECT de catalogo_servicos.buscar_servicos().
                 (ids, nome, descricao, tempo, ativo) = s
+                # Quantos portes já têm preço definido (0 = serviço não pode ser
+                # cobrado ainda; a badge fica vermelha para chamar atenção).
                 n_precos = len(mod_serv.precos_do_servico(ids))
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
@@ -698,11 +881,15 @@ def main(page: ft.Page):
             ))
 
         def form_precos(servico):
+            # Editor da matriz preço × porte: mostra um campo por categoria de veículo,
+            # já preenchido com o preço atual (se houver). Deixar em branco = remover o
+            # preço daquele porte (o serviço deixa de ser cobrável nele).
             id_servico, nome_serv = servico[0], servico[1]
             categorias = mod_veic.listar_categorias()
+            # {id_categoria: preco} com os preços que já existem hoje, para pré-preencher.
             precos_atuais = {cat_id: preco
                              for (cat_id, _cat_nome, preco) in mod_serv.precos_do_servico(id_servico)}
-            campos = {}  # id_categoria -> TextField
+            campos = {}  # id_categoria -> TextField (para ler os valores no salvar)
             linhas_precos = []
             for (cat_id, cat_nome, _ordem) in categorias:
                 atual = precos_atuais.get(cat_id)
@@ -717,24 +904,26 @@ def main(page: ft.Page):
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
-                # Valida tudo antes de gravar
+                # 1ª passada: valida TUDO antes de tocar no banco (aceita vírgula
+                # decimal). Assim não gravamos metade e abortamos no meio.
                 novos = {}
                 for cat_id, f in campos.items():
                     txt = (f.value or "").strip().replace(",", ".")
                     if not txt:
-                        novos[cat_id] = None  # remover
+                        novos[cat_id] = None  # vazio = marcar para remover
                         continue
                     try:
                         novos[cat_id] = float(txt)
                     except ValueError:
                         erro_form.value = "Preços devem ser números (ex.: 35,00)."
                         page.update(); return
+                # 2ª passada: grava. Só remove o que já existia (evita DELETE à toa).
                 for cat_id, val in novos.items():
                     if val is None:
                         if cat_id in precos_atuais:
                             mod_serv.remover_preco(id_servico, cat_id)
                     else:
-                        mod_serv.definir_preco(id_servico, cat_id, val)
+                        mod_serv.definir_preco(id_servico, cat_id, val)  # upsert
                 fechar_dialog()
                 atualizar()
 
@@ -796,6 +985,8 @@ def main(page: ft.Page):
         )
 
     def pagina_comandas():
+        # Duas peças além da lista: form_nova_comanda() (abre a comanda a partir de um
+        # veículo) e abrir_detalhe() (painel completo: itens, status, valores, pgto).
         filtro_abertas = ft.Checkbox(label="Somente abertas (fila)", value=True)
         corpo_tabela = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
@@ -814,6 +1005,7 @@ def main(page: ft.Page):
                                     text_align=ft.TextAlign.CENTER))
             linhas = []
             for c in comandas:
+                # Tupla = SELECT de ordem_servico.buscar_comandas() (resumo p/ a lista).
                 (ido, cli_nome, placa, status, total, forma, entrada) = c
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(f"#{ido}", weight=ft.FontWeight.BOLD)),
@@ -848,35 +1040,30 @@ def main(page: ft.Page):
 
         filtro_abertas.on_change = atualizar
 
-        # -------- Nova comanda (escolhe cliente + veículo) --------
+        # -------- Nova comanda (escolhe o veículo; o cliente vem dele) --------
         def form_nova_comanda():
-            clientes = mod_cli.buscar_clientes()
-            dd_cli = ft.Dropdown(
-                label="Cliente *", width=440,
-                options=[ft.dropdown.Option(key=str(c[0]), text=c[1]) for c in clientes])
-            dd_vei = ft.Dropdown(label="Veículo *", width=440, options=[],
-                                 hint_text="Selecione o cliente primeiro")
+            veiculos = mod_veic.buscar_veiculos()  # já traz nome do cliente e placa
+            dd_vei = ft.Dropdown(
+                label="Veículo *", width=440,
+                hint_text="Busque pela placa ou cliente", enable_filter=True,
+                options=[ft.dropdown.Option(
+                    key=str(v[0]),
+                    text=f"{v[5]} — {v[2]}" + (f" ({v[7]})" if v[7] else ""))  # placa — cliente (modelo)
+                    for v in veiculos])
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
-
-            def on_cli(e):
-                veics = mod_veic.buscar_veiculos_por_cliente(int(dd_cli.value))
-                dd_vei.options = [
-                    ft.dropdown.Option(
-                        key=str(v[0]),
-                        text=" - ".join(p for p in [v[4], v[6]] if p))  # placa - modelo
-                    for v in veics]
-                dd_vei.value = None
-                dd_vei.hint_text = ("Nenhum veículo ativo para este cliente"
-                                    if not veics else "Selecione o veículo")
-                page.update()
-            dd_cli.on_change = on_cli
+            if not veiculos:
+                erro.value = "Nenhum veículo cadastrado. Cadastre em Veículos primeiro."
 
             def criar(e):
-                if not dd_cli.value:
-                    erro.value = "Selecione o cliente."; page.update(); return
+                # A comanda é aberta pelo VEÍCULO; o cliente é deduzido dele
+                # (vinfo[1] = id_cliente), pois todo veículo pertence a um cliente.
                 if not dd_vei.value:
                     erro.value = "Selecione o veículo."; page.update(); return
-                ido = mod_os.abrir_comanda(int(dd_cli.value), int(dd_vei.value),
+                vinfo = mod_veic.buscar_veiculo_por_id(int(dd_vei.value))
+                if not vinfo:
+                    erro.value = "Veículo não encontrado."; page.update(); return
+                id_cliente = vinfo[1]
+                ido = mod_os.abrir_comanda(id_cliente, int(dd_vei.value),
                                            id_funcionario=sessao["id"] or None)
                 fechar_dialog()
                 if ido:
@@ -889,7 +1076,9 @@ def main(page: ft.Page):
                 modal=True, title_padding=0,
                 title=cabecalho_dialog("Nova comanda", ft.Icons.RECEIPT_LONG),
                 content=ft.Container(width=470, content=ft.Column(tight=True, spacing=12, controls=[
-                    dd_cli, dd_vei, erro,
+                    ft.Text("Escolha o veículo (o cliente é identificado automaticamente):",
+                            size=12, color=ft.Colors.GREY_600),
+                    dd_vei, erro,
                 ])),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
@@ -900,14 +1089,20 @@ def main(page: ft.Page):
 
         # -------- Painel de detalhe da comanda --------
         def abrir_detalhe(id_ordem):
+            # Diálogo grande com TUDO da comanda: dados, itens, mudança de status,
+            # valores e pagamento. É reaberto (via refrescar) após cada alteração.
             dados = mod_os.buscar_comanda_por_id(id_ordem)
             if not dados:
                 aviso("Erro", "Comanda não encontrada.")
                 return
             comanda = dados["comanda"]
             itens = dados["itens"]
+            # ⚠️ Aqui a tupla 'comanda' é lida por índices soltos (1,2,5,6,7,8 e 11..16
+            # mais abaixo). Esses números seguem a ordem do SELECT em
+            # ordem_servico.buscar_comanda_por_id() — confira lá se algo sair errado.
             id_cliente, id_veiculo = comanda[1], comanda[2]
             status, forma, total, entrada = comanda[5], comanda[6], comanda[7], comanda[8]
+            # Comanda entregue/cancelada é "travada": desabilita edição de itens/status.
             finalizada = status in ("entregue", "cancelado")
 
             cli = mod_cli.buscar_cliente_por_id(id_cliente)
@@ -946,6 +1141,9 @@ def main(page: ft.Page):
                 options=[ft.dropdown.Option(key=str(s[0]), text=s[1]) for s in servicos])
 
             def add_serv(e):
+                # adicionar_servico devolve None quando o serviço não tem preço para o
+                # PORTE deste veículo (a matriz preço×porte não cobre essa combinação).
+                # Nesse caso avisamos em vez de adicionar um item sem valor.
                 if not dd_serv.value:
                     return
                 r = mod_os.adicionar_servico(id_ordem, int(dd_serv.value),
@@ -977,29 +1175,172 @@ def main(page: ft.Page):
                 botao_status("Cancelar", "cancelado", ft.Colors.RED_600),
             ])
 
-            # Pagamento
-            dd_pag = ft.Dropdown(
-                label="Forma de pagamento", expand=True, value=forma,
-                options=[ft.dropdown.Option(key=k, text=t) for k, t in FORMAS_PAGAMENTO])
+            # ----- Financeiro (Valores + Pagamento) -----
+            # Valor final = soma dos serviços - desconto + acréscimo/juros.
+            total_f = float(total or 0)
+            desconto = float(comanda[11] or 0)
+            acrescimo = float(comanda[12] or 0)
+            parcelas = comanda[13] or 1
+            valor_pago = float(comanda[14] or 0)
+            data_pag = comanda[15]
+            data_venc = comanda[16]
+            valor_final = total_f - desconto + acrescimo
+            valor_pendente = valor_final - valor_pago
+            # Status de pagamento derivado (não vem do banco): a tolerância de 0,005
+            # evita marcar "Parcial" por causa de arredondamento de centavos.
+            if valor_final <= 0:
+                pag_status, pag_cor = "—", ft.Colors.GREY_600
+            elif valor_pago >= valor_final - 0.005:
+                pag_status, pag_cor = "Pago", ft.Colors.GREEN_700
+            elif valor_pago > 0:
+                pag_status, pag_cor = "Parcial", ft.Colors.ORANGE_800
+            else:
+                pag_status, pag_cor = "Pendente", ft.Colors.RED_600
 
-            def reg_pag(e):
-                if not dd_pag.value:
-                    return
-                mod_os.registrar_pagamento(id_ordem, dd_pag.value)
-                refrescar()
+            def form_pagamento(e):
+                f_desc = ft.TextField(label="Desconto", width=150, prefix=ft.Text("R$ "),
+                                      value=f"{desconto:.2f}".replace('.', ','))
+                f_acre = ft.TextField(label="Acréscimo/Juros", width=150, prefix=ft.Text("R$ "),
+                                      value=f"{acrescimo:.2f}".replace('.', ','))
+                dd_forma = ft.Dropdown(
+                    label="Forma de pagamento", width=260, value=forma,
+                    options=[ft.dropdown.Option(key=k, text=t) for k, t in FORMAS_PAGAMENTO])
+                f_parc = ft.TextField(label="Parcelas", width=110, value=str(parcelas or 1))
+                f_pago = ft.TextField(label="Valor pago", width=150, prefix=ft.Text("R$ "),
+                                      value=f"{(valor_pago or valor_final):.2f}".replace('.', ','))
+                f_dpag = ft.TextField(
+                    label="Data pgto (AAAA-MM-DD)", width=210,
+                    value=(data_pag.strftime('%Y-%m-%d') if data_pag
+                           else datetime.now().strftime('%Y-%m-%d')))
+                f_venc = ft.TextField(label="Vencimento (AAAA-MM-DD)", width=210,
+                                      value=(data_venc.strftime('%Y-%m-%d') if data_venc else ''))
+                erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
-            linha_pag = ft.Row(spacing=10, controls=[
-                dd_pag,
-                ft.FilledButton("Registrar", icon=ft.Icons.PAYMENTS, on_click=reg_pag,
-                                disabled=finalizada,
-                                style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
-            ])
+                def num(campo):
+                    # Lê um campo monetário como float (vírgula -> ponto); vazio = 0.0.
+                    t = (campo.value or '').strip().replace(',', '.')
+                    return float(t) if t else 0.0
+
+                def salvar(e):
+                    # Valida números, parcelas (inteiro >= 1) e datas ANTES de gravar.
+                    for campo in (f_desc, f_acre, f_pago):
+                        t = (campo.value or '').strip().replace(',', '.')
+                        if t:
+                            try:
+                                float(t)
+                            except ValueError:
+                                erro.value = "Valores devem ser números."; page.update(); return
+                    parc_txt = (f_parc.value or '1').strip()
+                    if not parc_txt.isdigit() or int(parc_txt) < 1:
+                        erro.value = "Parcelas deve ser inteiro maior ou igual a 1."
+                        page.update(); return
+                    for campo, rot in ((f_dpag, 'Data pgto'), (f_venc, 'Vencimento')):
+                        t = (campo.value or '').strip()
+                        if t:
+                            try:
+                                datetime.strptime(t, '%Y-%m-%d')
+                            except ValueError:
+                                erro.value = f"{rot}: data inválida (AAAA-MM-DD)."
+                                page.update(); return
+                    mod_os.salvar_financeiro(
+                        id_ordem, desconto=num(f_desc), acrescimo=num(f_acre),
+                        forma_pagamento=dd_forma.value, parcelas=int(parc_txt),
+                        valor_pago=num(f_pago),
+                        data_pagamento=(f_dpag.value or '').strip() or None,
+                        data_vencimento=(f_venc.value or '').strip() or None)
+                    refrescar()
+
+                abrir_dialog(ft.AlertDialog(
+                    modal=True, title_padding=0,
+                    title=cabecalho_dialog(f"Pagamento — Comanda #{id_ordem}", ft.Icons.PAYMENTS),
+                    content=ft.Container(width=500, content=ft.Column(
+                        tight=True, spacing=12, scroll=ft.ScrollMode.AUTO, controls=[
+                            ft.Text(f"Valor total dos serviços: {brl(total_f)}",
+                                    weight=ft.FontWeight.BOLD),
+                            ft.Row([f_desc, f_acre], spacing=16),
+                            dd_forma,
+                            ft.Row([f_parc, f_pago], spacing=16),
+                            ft.Row([f_dpag, f_venc], spacing=16),
+                            erro,
+                        ])),
+                    actions=[
+                        ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
+                        ft.FilledButton("Salvar", on_click=salvar,
+                                        style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
+                    ]))
+
+            def gerar_recibo(e):
+                pasta = os.path.join(os.path.dirname(__file__), "recibos")
+                ctx = {
+                    "id_ordem": id_ordem, "cli_nome": cli_nome, "placa": placa,
+                    "data": fmt_dt(entrada),
+                    "itens": [(nome_serv, preco) for (_i, nome_serv, preco) in itens],
+                    "total": total_f, "desconto": desconto, "acrescimo": acrescimo,
+                    "valor_final": valor_final,
+                    "forma": dict(FORMAS_PAGAMENTO).get(forma, forma or "—"),
+                    "parcelas": parcelas or 1,
+                    "valor_pago": valor_pago, "valor_pendente": valor_pendente,
+                    "pag_status": pag_status,
+                    "data_pag": fmt_date(data_pag), "data_venc": fmt_date(data_venc),
+                    "logo": os.path.join(os.path.dirname(__file__), "imagen", "trucka car.png"),
+                }
+                try:
+                    os.makedirs(pasta, exist_ok=True)
+                    caminho = os.path.join(pasta, f"recibo_comanda_{id_ordem}.pdf")
+                    gerar_recibo_pdf(caminho, ctx)
+                    try:
+                        os.startfile(caminho)  # abre o PDF (Windows)
+                    except Exception:
+                        pass
+                    aviso("Recibo gerado", f"Recibo PDF salvo em:\n{caminho}")
+                except Exception as err:
+                    # Fallback simples em .txt caso o PDF falhe (ex.: sem reportlab)
+                    try:
+                        caminho = os.path.join(pasta, f"recibo_comanda_{id_ordem}.txt")
+                        with open(caminho, "w", encoding="utf-8") as f:
+                            f.write(f"Recibo Comanda #{id_ordem}\nCliente: {cli_nome}\n"
+                                    f"Veículo: {placa}\nValor final: {brl(valor_final)}\n"
+                                    f"Pago: {brl(valor_pago)} | Pendente: {brl(valor_pendente)}\n"
+                                    f"Status: {pag_status}\n")
+                        aviso("Recibo gerado (.txt)",
+                              f"PDF indisponível ({err}). Salvei em texto:\n{caminho}")
+                    except Exception as err2:
+                        aviso("Erro", f"Não foi possível gerar o recibo: {err2}")
 
             def linha_info(rotulo, valor):
                 return ft.Row(spacing=8, controls=[
                     ft.Text(f"{rotulo}:", size=13, color=ft.Colors.GREY_600, width=80),
                     ft.Text(valor, size=13, weight=ft.FontWeight.W_500),
                 ])
+
+            def linha_val(rotulo, valor_txt, bold=False, cor=None):
+                return ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[
+                    ft.Text(rotulo, size=13, color=ft.Colors.GREY_700),
+                    ft.Text(valor_txt, size=14 if bold else 13,
+                            weight=ft.FontWeight.BOLD if bold else ft.FontWeight.W_500, color=cor)])
+
+            bloco_valores = ft.Column(spacing=4, controls=[
+                linha_val("Valor Total", brl(total_f)),
+                linha_val("Desconto", brl(desconto)),
+                linha_val("Acréscimo/Juros", brl(acrescimo)),
+                linha_val("Valor Final", brl(valor_final), bold=True, cor=COR_PRIMARIA),
+            ])
+            bloco_pagamento = ft.Column(spacing=4, controls=[
+                linha_val("Forma Pgto", dict(FORMAS_PAGAMENTO).get(forma, forma or "—")),
+                linha_val("Parcelas", str(parcelas or 1)),
+                linha_val("Valor Pago", brl(valor_pago)),
+                linha_val("Valor Pendente", brl(valor_pendente)),
+                linha_val("Status", pag_status, bold=True, cor=pag_cor),
+                linha_val("Data Pgto", fmt_date(data_pag)),
+                linha_val("Vencimento", fmt_date(data_venc)),
+            ])
+            botoes_fin = ft.Row(spacing=10, wrap=True, controls=[
+                ft.FilledButton("Registrar pgto", icon=ft.Icons.PAYMENTS, on_click=form_pagamento,
+                                disabled=status == "cancelado",
+                                style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_600)),
+                ft.OutlinedButton("Gerar recibo", icon=ft.Icons.RECEIPT_LONG,
+                                  on_click=gerar_recibo),
+            ])
 
             conteudo = ft.Container(width=600, content=ft.Column(
                 tight=True, spacing=14, scroll=ft.ScrollMode.AUTO, controls=[
@@ -1011,7 +1352,7 @@ def main(page: ft.Page):
                         ]),
                         ft.Column(horizontal_alignment=ft.CrossAxisAlignment.END, spacing=6,
                                   controls=[badge_status(status),
-                                            ft.Text(brl(total), size=22,
+                                            ft.Text(brl(valor_final), size=22,
                                                     weight=ft.FontWeight.BOLD, color=COR_PRIMARIA)]),
                     ]),
                     ft.Divider(),
@@ -1022,8 +1363,12 @@ def main(page: ft.Page):
                     ft.Text("Status do atendimento", weight=ft.FontWeight.BOLD),
                     linha_status,
                     ft.Divider(),
+                    ft.Text("Valores", weight=ft.FontWeight.BOLD),
+                    bloco_valores,
+                    ft.Divider(),
                     ft.Text("Pagamento", weight=ft.FontWeight.BOLD),
-                    linha_pag,
+                    bloco_pagamento,
+                    botoes_fin,
                 ]))
 
             abrir_dialog(ft.AlertDialog(
@@ -1060,6 +1405,8 @@ def main(page: ft.Page):
             termo = (campo_busca.value or "").strip() or None
             produtos = mod_estoque.buscar_produtos(
                 termo=termo, apenas_ativos=not mostrar_inativos.value)
+            # Conjunto de ids no vermelho, para marcar cada linha em O(1) (evita
+            # consultar "abaixo do mínimo" produto a produto dentro do loop).
             abaixo = {p[0] for p in mod_estoque.produtos_abaixo_minimo()}
             if not produtos:
                 return ft.Container(
@@ -1067,8 +1414,9 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum produto encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for p in produtos:
+                # Tupla = SELECT de estoque.buscar_produtos().
                 (idp, nome, unidade, qtd, minimo, custo, forn_nome, ativo) = p
-                critico = idp in abaixo
+                critico = idp in abaixo   # True = quantidade <= estoque mínimo
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                     bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
@@ -1156,6 +1504,8 @@ def main(page: ft.Page):
             f_nome = ft.TextField(label="Nome *", value=produto[1] if editando else "", width=440)
             f_un = ft.TextField(label="Unidade (L, un, kg...)", width=180,
                                 value=(produto[2] or "") if editando else "")
+            # Quantidade só é editável na CRIAÇÃO. Depois, o saldo muda apenas via
+            # Entrada/Saída (que registram no histórico) — por isso fica desabilitado.
             f_qtd = ft.TextField(label="Quantidade inicial", width=180, value="0",
                                  disabled=editando,
                                  helper=ft.Text("Após criar, use Entrada/Saída") if not editando else None)
@@ -1252,6 +1602,8 @@ def main(page: ft.Page):
                     erro_form.value = "Quantidade deve ser maior que zero."
                     page.update(); return
                 obs = (f_obs.value or "").strip() or None
+                # Entrada soma ao saldo; saída subtrai. registrar_saida devolve None
+                # quando não há saldo suficiente (o backend recusa deixar negativo).
                 if dd_tipo.value == "entrada":
                     res = mod_estoque.registrar_entrada(id_produto, qtd, obs)
                 else:
@@ -1346,6 +1698,8 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum veículo encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for v in veiculos:
+                # Tupla = SELECT de cadastro_veiculo.buscar_veiculos() (já traz o nome
+                # do cliente e o nome do porte via JOIN, além dos ids idc/idcat).
                 (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor, ativo) = v
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
@@ -1542,6 +1896,7 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum agendamento encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for a in ags:
+                # Tupla = SELECT de agendamento.buscar_agendamentos().
                 (ida, data_hora, cli_nome, placa, dur, box, status, origem) = a
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(fmt_dt(data_hora), weight=ft.FontWeight.W_600)),
@@ -1576,38 +1931,16 @@ def main(page: ft.Page):
 
         f_filtro_data.on_change = atualizar
 
-        # ---- Campos de cliente/veículo reutilizados (com filtro dinâmico) ----
-        def montar_dropdowns_cliente_veiculo(id_cli_atual=None, id_vei_atual=None):
-            clientes = mod_cli.buscar_clientes()
-            dd_cli = ft.Dropdown(
-                label="Cliente *", expand=True,
-                options=[ft.dropdown.Option(key=str(c[0]), text=c[1]) for c in clientes],
-                value=str(id_cli_atual) if id_cli_atual else None)
-            dd_vei = ft.Dropdown(label="Veículo *", expand=True, options=[],
-                                 hint_text="Selecione o cliente primeiro",
-                                 value=str(id_vei_atual) if id_vei_atual else None)
-
-            def carregar_veiculos(id_cli, manter=None):
-                veics = mod_veic.buscar_veiculos_por_cliente(int(id_cli))
-                dd_vei.options = [
-                    ft.dropdown.Option(key=str(v[0]),
-                                       text=" - ".join(p for p in [v[4], v[6]] if p))
-                    for v in veics]
-                dd_vei.value = str(manter) if manter else None
-                dd_vei.hint_text = ("Nenhum veículo ativo" if not veics else "Selecione o veículo")
-
-            if id_cli_atual:
-                carregar_veiculos(id_cli_atual, manter=id_vei_atual)
-
-            def on_cli(e):
-                carregar_veiculos(dd_cli.value)
-                page.update()
-            dd_cli.on_change = on_cli
-            return dd_cli, dd_vei
-
         # ---- Novo agendamento ----
         def form_novo():
-            dd_cli, dd_vei = montar_dropdowns_cliente_veiculo()
+            veiculos = mod_veic.buscar_veiculos()  # traz nome do cliente e placa
+            dd_vei = ft.Dropdown(
+                label="Veículo *", expand=True,
+                hint_text="Busque pela placa ou cliente", enable_filter=True,
+                options=[ft.dropdown.Option(
+                    key=str(v[0]),
+                    text=f"{v[5]} — {v[2]}" + (f" ({v[7]})" if v[7] else ""))  # placa — cliente (modelo)
+                    for v in veiculos])
             hoje = datetime.now().strftime("%Y-%m-%d")
             f_data = ft.TextField(label="Data (AAAA-MM-DD) *", value=hoje, width=200)
             f_hora = ft.TextField(label="Hora (HH:MM) *", value="09:00", width=140)
@@ -1630,10 +1963,12 @@ def main(page: ft.Page):
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
-                if not dd_cli.value:
-                    erro.value = "Selecione o cliente."; page.update(); return
                 if not dd_vei.value:
                     erro.value = "Selecione o veículo."; page.update(); return
+                vinfo = mod_veic.buscar_veiculo_por_id(int(dd_vei.value))
+                id_cliente_sel = vinfo[1] if vinfo else None
+                if not id_cliente_sel:
+                    erro.value = "Veículo inválido."; page.update(); return
                 data_txt = (f_data.value or "").strip()
                 hora_txt = (f_hora.value or "").strip()
                 try:
@@ -1649,7 +1984,9 @@ def main(page: ft.Page):
                 box = (f_box.value or "").strip() or None
                 escolhidos = [sid for sid, c in chk_servicos if c.value]
 
-                # Checagem de conflito amigável (antes de tentar gravar)
+                # Checagem de conflito amigável (antes de tentar gravar): só faz sentido
+                # se um box foi informado — dois carros não podem ocupar o mesmo box no
+                # mesmo horário. O backend também valida, mas aqui damos erro mais claro.
                 if box:
                     conflitos = mod_ag.verificar_conflito(
                         quando.strftime("%Y-%m-%d %H:%M:%S"), dur_val, box)
@@ -1659,7 +1996,7 @@ def main(page: ft.Page):
                         page.update(); return
 
                 novo = mod_ag.criar_agendamento(
-                    id_cliente=int(dd_cli.value), id_veiculo=int(dd_vei.value),
+                    id_cliente=id_cliente_sel, id_veiculo=int(dd_vei.value),
                     data_hora=quando.strftime("%Y-%m-%d %H:%M:%S"),
                     servicos=escolhidos, duracao_estimada_min=dur_val, box=box,
                     origem=dd_origem.value or "manual",
@@ -1676,7 +2013,7 @@ def main(page: ft.Page):
                 title=cabecalho_dialog("Novo agendamento", ft.Icons.EVENT),
                 content=ft.Container(width=520, content=ft.Column(
                     tight=True, spacing=12, scroll=ft.ScrollMode.AUTO, controls=[
-                        dd_cli, dd_vei,
+                        dd_vei,
                         ft.Row([f_data, f_hora, f_dur], spacing=12),
                         ft.Row([f_box, dd_origem], spacing=12),
                         ft.Text("Serviços desejados", size=13, color=ft.Colors.GREY_600),
@@ -1744,7 +2081,9 @@ def main(page: ft.Page):
                 return
             ag = dados["agendamento"]
             servicos = dados["servicos"]
+            # Tupla = SELECT de agendamento.buscar_agendamento_por_id() (linha "agendamento").
             (ida, id_cliente, id_veiculo, data_hora, dur, box, status, origem, obs) = ag
+            # Estados terminais: desabilitam status/remarcar/cancelar no detalhe.
             encerrado = status in ("concluido", "cancelado", "nao_compareceu")
 
             cli = mod_cli.buscar_cliente_por_id(id_cliente)
@@ -1792,6 +2131,8 @@ def main(page: ft.Page):
             ])
 
             def gerar_comanda(e):
+                # Converte o agendamento em comanda (leva cliente, veículo e serviços
+                # desejados). É a "ponte" entre a agenda e o atendimento em Comandas.
                 ido = mod_os.abrir_de_agendamento(id_ag, id_funcionario=sessao["id"] or None)
                 if ido:
                     fechar_dialog(); atualizar()
@@ -1887,6 +2228,8 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum funcionário encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for f in funcs:
+                # Tupla = SELECT de funcionario.buscar_funcionarios(). NÃO traz a
+                # senha_hash — senha nunca circula na interface (só se define/troca).
                 (idf, nome, funcao_v, login, comissao, data_adm, ativo) = f
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
@@ -2019,6 +2362,8 @@ def main(page: ft.Page):
                 ft.Row([dd_funcao, f_login], spacing=20),
                 ft.Row([f_comissao, f_adm], spacing=20),
             ]
+            # Senha só aparece ao CRIAR. Na edição, trocar senha é ação à parte
+            # (form_senha, botão de cadeado na lista) para não mexer nela sem querer.
             if not editando:
                 campos.append(f_senha)
             campos.append(erro_form)
@@ -2102,6 +2447,7 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum fornecedor encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for f in forns:
+                # Tupla = SELECT de fornecedores.buscar_fornecedores().
                 (idf, nome, cnpj, tel, email, cond, ativo) = f
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
@@ -2287,6 +2633,9 @@ def main(page: ft.Page):
             ]))
 
     def pagina_planos():
+        # Tela com DUAS abas internas (Planos / Assinaturas), alternadas pela barra
+        # de botões. 'aba' guarda a aba atual; render() redesenha barra + conteúdo.
+        # (Padrão diferente das outras telas por causa das sub-seções.)
         aba = {"atual": "Planos"}
         area = ft.Container(expand=True)
         barra = ft.Row(spacing=8)
@@ -2472,6 +2821,8 @@ def main(page: ft.Page):
                         content=ft.Text("Nenhuma assinatura. Clique em \"Nova assinatura\".",
                                         color=ft.Colors.GREY_500))
                 linhas = []
+                # Tupla = SELECT de planos_assinaturas.buscar_assinaturas() (cli/plano
+                # já vêm como nomes via JOIN; 'renov' = renovação automática).
                 for (ida, cli, plano, inicio, venc, renov, ativo) in assinaturas:
                     badge = ft.Container(
                         padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
@@ -2507,10 +2858,12 @@ def main(page: ft.Page):
                 page.update()
 
             def ver_resumo(id_assinatura):
+                # Acha a assinatura na lista já carregada (só para exibir cliente/plano).
                 ass = next((a for a in mod_planos.buscar_assinaturas(apenas_ativas=False)
                             if a[0] == id_assinatura), None)
                 # Descobrir o id do plano dessa assinatura via buscar_plano por nome é frágil;
-                # usamos saldo_servicos_mes para montar o resumo real do contratado.
+                # usamos saldo_servicos_mes para montar o resumo real do contratado
+                # (cada serviço com cota do mês, quanto já foi usado e quanto resta).
                 saldo = mod_planos.saldo_servicos_mes(id_assinatura)
                 if saldo:
                     itens = [ft.Text(f"• {nome} — {int(cota)}x/mês "
@@ -2550,9 +2903,11 @@ def main(page: ft.Page):
                 erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
                 def on_plano(e):
+                    # Ao escolher o plano, mostra o resumo (valor + serviços inclusos)
+                    # para o cliente ficar ciente do que está contratando antes de assinar.
                     resumo.content = (resumo_plano_widget(int(dd_plano.value))
                                       if dd_plano.value else None)
-                    page.update()
+                    resumo.update()
                 dd_plano.on_change = on_plano
 
                 def salvar(e):
@@ -2621,6 +2976,8 @@ def main(page: ft.Page):
     # ============================================================
     # PÁGINA: DESPESAS (contas a pagar)
     # ============================================================
+    # Import local (não no topo do arquivo) só por organização — mantém o módulo de
+    # despesa perto da tela que o usa. Funciona igual; é intencional, não é erro.
     import despesa as mod_desp
 
     def pagina_despesas():
@@ -2634,6 +2991,8 @@ def main(page: ft.Page):
         corpo_tabela = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
         def recarregar_categorias():
+            # As categorias não são cadastro fixo: são texto livre nas despesas. Aqui
+            # remontamos o filtro com as categorias que realmente existem hoje.
             cats = [c[0] for c in mod_desp.total_por_categoria()
                     if c[0] and c[0] != "(sem categoria)"]
             atual = dd_categoria.value
@@ -2646,7 +3005,8 @@ def main(page: ft.Page):
             categoria = (dd_categoria.value or "") or None
             despesas = mod_desp.buscar_despesas(
                 categoria=categoria, apenas_em_aberto=so_aberto.value)
-            # total em aberto (geral)
+            # Total em aberto é SEMPRE o geral (ignora o filtro de categoria/aberto da
+            # tabela), pois o chip resume "quanto ainda devo no total". d[3] = valor.
             abertas = mod_desp.buscar_despesas(apenas_em_aberto=True)
             total_aberto = sum(float(d[3] or 0) for d in abertas)
             chip_total.content.value = f"Em aberto: {brl(total_aberto)}  ({len(abertas)} conta(s))"
@@ -2657,8 +3017,10 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhuma despesa encontrada.", color=ft.Colors.GREY_500))
             linhas = []
             for d in despesas:
+                # Tupla = SELECT de despesa.buscar_despesas(). 'forn' já é o NOME do
+                # fornecedor (via JOIN) — o id vem só de buscar_despesa_por_id (edição).
                 (idd, desc, cat, valor, venc, pag, forn, forma) = d
-                paga = pag is not None
+                paga = pag is not None   # tem data de pagamento => já foi paga
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                     bgcolor=ft.Colors.GREEN_100 if paga else ft.Colors.ORANGE_100,
@@ -2849,9 +3211,13 @@ def main(page: ft.Page):
     # PÁGINA: CAIXA (estado: aberto/fechado + movimentos + histórico)
     # ============================================================
     def pagina_caixa():
+        # Tela de estado (não é uma lista com CRUD): mostra o caixa ABERTO (com seus
+        # movimentos e botões) ou o painel de "abrir caixa", + o histórico embaixo.
+        # construir() decide qual painel montar conforme houver ou não caixa aberto.
         conteudo = ft.Column(expand=True, spacing=20)
 
         def render():
+            # Reconstrói os painéis do zero (relê caixa_aberto/movimentos) e repinta.
             conteudo.controls = construir()
             page.update()
 
@@ -2943,6 +3309,8 @@ def main(page: ft.Page):
                                              observacoes=(f_obs.value or "").strip() or None)
                 fechar_dialog()
                 if res:
+                    # diferenca = saldo real contado - saldo esperado pelo sistema.
+                    # >0 sobra, <0 falta, ~0 bateu (tolerância p/ arredondamento).
                     dif = res["diferenca"]
                     if dif is None:
                         msg = "Caixa fechado."
@@ -2985,7 +3353,9 @@ def main(page: ft.Page):
             ])
 
         def painel_aberto(aberto):
+            # 'aberto' = tupla de caixa.caixa_aberto(): (id, abertura, fundo, id_func).
             id_caixa, data_ab, valor_ini, id_func = aberto
+            # Saldo esperado = fundo inicial + entradas - saídas (calculado no backend).
             esperado = mod_caixa.saldo_esperado(id_caixa)
             func = mod_func.buscar_funcionario_por_id(id_func) if id_func else None
             resp = func[1] if func else "—"
@@ -3026,6 +3396,8 @@ def main(page: ft.Page):
 
             if movs:
                 linhas = []
+                # Cada movimento pode referenciar uma comanda (id_ordem) OU uma despesa
+                # (id_desp) OU nenhum (entrada/saída avulsa). Só um deles vem preenchido.
                 for (_idm, tipo, valor, desc, id_ordem, id_desp, data) in movs:
                     entrada = tipo == "entrada"
                     linhas.append(ft.DataRow(cells=[
@@ -3076,6 +3448,8 @@ def main(page: ft.Page):
             caixas = mod_caixa.historico_caixas()
             if caixas:
                 linhas = []
+                # Tupla = SELECT de caixa.historico_caixas(): id, abertura, fechamento,
+                # fundo inicial, saldo final, status. 'fe'/'sfinal' são None se aberto.
                 for (idc, ab, fe, vini, sfinal, status) in caixas:
                     aberto_s = status == "aberto"
                     badge = ft.Container(
@@ -3117,6 +3491,7 @@ def main(page: ft.Page):
     # ============================================================
     # PÁGINA: FIDELIDADE (pontos por cliente: acúmulo/resgate + extrato)
     # ============================================================
+    # Import local (igual ao de despesa acima): intencional, não é erro.
     import fidelidade as mod_fid
 
     def pagina_fidelidade():
@@ -3134,6 +3509,8 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum cliente encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for c in clientes:
+                # Reaproveita a tupla de clientes; pega só id(0), nome(1) e telefone(3)
+                # — pula cpf_cnpj(2). Saldo de pontos vem de fidelidade.saldo_pontos().
                 idc, nome, tel = c[0], c[1], c[3]
                 saldo = mod_fid.saldo_pontos(idc)
                 chip = ft.Container(
@@ -3179,6 +3556,9 @@ def main(page: ft.Page):
         campo_busca.on_change = atualizar
 
         def form_pontos(id_cliente, nome, modo, saldo_atual=None):
+            # Mesmo formulário para acumular e resgatar (modo decide). No resgate
+            # passamos saldo_atual para mostrar quanto o cliente tem; o backend
+            # recusa (devolve None) se os pontos a resgatar excederem o saldo.
             acumular = modo == "acumular"
             f_pontos = ft.TextField(label="Pontos *", width=160)
             f_desc = ft.TextField(label="Descrição", width=400,
@@ -3224,8 +3604,10 @@ def main(page: ft.Page):
             saldo = mod_fid.saldo_pontos(id_cliente)
             if movs:
                 linhas = []
+                # Tupla = SELECT de fidelidade.extrato_pontos(). id_ordem preenchido
+                # quando os pontos vieram de uma comanda; None se lançamento manual.
                 for (_idm, tipo, pts, id_ordem, desc, data) in movs:
-                    acum = tipo == "acumulo"
+                    acum = tipo == "acumulo"   # senão é "resgate"
                     linhas.append(ft.DataRow(cells=[
                         ft.DataCell(ft.Row(spacing=4, controls=[
                             ft.Icon(ft.Icons.ADD if acum else ft.Icons.REMOVE, size=16,
@@ -3272,6 +3654,9 @@ def main(page: ft.Page):
     # PÁGINA: placeholder "em construção"
     # ============================================================
     def pagina_em_construcao(nome):
+        # Fábrica de tela placeholder: recebe o nome e DEVOLVE a função construtora
+        # (_build), para casar com o formato esperado em paginas[nome] = (icone, func).
+        # Hoje nenhuma tela usa isto (todas foram implementadas), mas fica de reserva.
         def _build():
             return ft.Column(expand=True, spacing=20, controls=[
                 cabecalho(nome),
@@ -3293,23 +3678,26 @@ def main(page: ft.Page):
     # ------------------------------------------------------------
     def registrar_paginas():
         paginas.clear()
+        # Ordem do menu segue o fluxo operacional do dia a dia
         paginas["Dashboard"] = (ft.Icons.DASHBOARD, pagina_dashboard)
         paginas["Clientes"] = (ft.Icons.PEOPLE, pagina_clientes)
         paginas["Veículos"] = (ft.Icons.DIRECTIONS_CAR, pagina_veiculos)
+        paginas["Agendamentos"] = (ft.Icons.EVENT, pagina_agendamentos)
+        paginas["Comandas"] = (ft.Icons.RECEIPT_LONG, pagina_comandas)
         paginas["Serviços"] = (ft.Icons.LOCAL_CAR_WASH, pagina_servicos)
-        paginas["Agendamentos"] = (ft.Icons.EVENT, pagina_agendamentos)  # CRUD completo
-        paginas["Comandas"] = (ft.Icons.RECEIPT_LONG, pagina_comandas)  # CRUD completo
         paginas["Estoque"] = (ft.Icons.INVENTORY_2, pagina_estoque)
-        paginas["Caixa"] = (ft.Icons.POINT_OF_SALE, pagina_caixa)  # CRUD completo
-        paginas["Funcionários"] = (ft.Icons.BADGE, pagina_funcionarios)  # CRUD completo
-        paginas["Fornecedores"] = (ft.Icons.LOCAL_SHIPPING, pagina_fornecedores)  # CRUD completo
-        paginas["Despesas"] = (ft.Icons.PAYMENTS, pagina_despesas)  # CRUD completo
-        paginas["Fidelidade"] = (ft.Icons.STARS, pagina_fidelidade)  # CRUD completo
-        paginas["Planos"] = (ft.Icons.CARD_MEMBERSHIP, pagina_planos)  # CRUD completo
+        paginas["Fornecedores"] = (ft.Icons.LOCAL_SHIPPING, pagina_fornecedores)
+        paginas["Caixa"] = (ft.Icons.POINT_OF_SALE, pagina_caixa)
+        paginas["Despesas"] = (ft.Icons.PAYMENTS, pagina_despesas)
+        paginas["Fidelidade"] = (ft.Icons.STARS, pagina_fidelidade)
+        paginas["Planos"] = (ft.Icons.CARD_MEMBERSHIP, pagina_planos)
+        paginas["Funcionários"] = (ft.Icons.BADGE, pagina_funcionarios)
 
-    # Início: tela de login
+    # Ponto de partida da aplicação: a primeira coisa que aparece é o login.
+    # Só depois de autenticar (montar_app) a sidebar e as telas são construídas.
     tela_login()
 
 
 if __name__ == "__main__":
+    # ft.run recebe main(page) e abre a janela do app (API do Flet 0.85).
     ft.run(main)

@@ -36,6 +36,9 @@ def _preco_servico_para_veiculo(cursor, id_servico, id_veiculo):
 
 def _recalcular_total(cursor, id_ordem):
     """Atualiza valor_total da comanda com a soma dos itens. Retorna o total."""
+    # Recalcula do zero (SUM dos preco_aplicado dos itens) em vez de somar/subtrair
+    # incrementalmente — assim o total nunca "desanda" após adições/remoções.
+    # Chamado sempre que os itens mudam, dentro da MESMA transação de quem chamou.
     cursor.execute(
         """
         UPDATE ordem_servico
@@ -114,12 +117,16 @@ def adicionar_servico(id_ordem, id_servico, id_funcionario=None, preco=None):
         id_veiculo = linha[0]
 
         if preco is None:
+            # Busca o preço pelo PORTE do veículo desta comanda. None => o serviço não
+            # tem preço para esse porte; devolvemos None e o app.py avisa o usuário.
             preco = _preco_servico_para_veiculo(cursor, id_servico, id_veiculo)
             if preco is None:
                 print(f"Sem preço definido para o serviço {id_servico} no porte "
                       f"do veículo {id_veiculo}. Defina em servico_preco ou informe 'preco'.")
                 return None
 
+        # preco_aplicado CONGELA o valor cobrado neste item. Reajustes futuros na
+        # tabela de preços NÃO alteram comandas antigas (histórico fiel do que foi pago).
         cursor.execute(
             """
             INSERT INTO ordem_servico_item (id_ordem, id_servico, id_funcionario, preco_aplicado)
@@ -194,6 +201,9 @@ def alterar_status(id_ordem, novo_status):
 
     try:
         cursor = conexao.cursor()
+        # Os CASE gravam o horário só na PRIMEIRA vez que se entra no status (a condição
+        # "IS NULL" impede sobrescrever). Assim, voltar a 'em_execucao' não zera o
+        # inicio_em original — os tempos de início/fim ficam fiéis ao 1º acontecimento.
         cursor.execute(
             """
             UPDATE ordem_servico
@@ -242,6 +252,51 @@ def registrar_pagamento(id_ordem, forma_pagamento):
 
     except Exception as erro:
         print(f"Erro ao registrar pagamento: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def salvar_financeiro(id_ordem, desconto=None, acrescimo=None, forma_pagamento=None,
+                      parcelas=None, valor_pago=None, data_pagamento=None,
+                      data_vencimento=None):
+    """
+    Atualiza os campos financeiros da comanda (desconto, acréscimo/juros, forma e
+    parcelas, valor pago, datas de pagamento/vencimento). Apenas os campos
+    informados (diferentes de None) são alterados (COALESCE).
+    O valor_final (total - desconto + acréscimo) e o valor_pendente são calculados
+    na exibição, não armazenados. Retorna True se atualizou, False caso contrário.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            UPDATE ordem_servico
+            SET desconto        = COALESCE(%s, desconto),
+                acrescimo       = COALESCE(%s, acrescimo),
+                forma_pagamento = COALESCE(%s, forma_pagamento),
+                parcelas        = COALESCE(%s, parcelas),
+                valor_pago      = COALESCE(%s, valor_pago),
+                data_pagamento  = COALESCE(%s, data_pagamento),
+                data_vencimento = COALESCE(%s, data_vencimento),
+                atualizado_em   = NOW()
+            WHERE id_ordem = %s;
+            """,
+            (desconto, acrescimo, forma_pagamento, parcelas, valor_pago,
+             data_pagamento, data_vencimento, id_ordem)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except Exception as erro:
+        print(f"Erro ao salvar financeiro da comanda: {erro}")
         conexao.rollback()
         return False
 
@@ -307,11 +362,20 @@ def buscar_comanda_por_id(id_ordem):
 
     try:
         cursor = conexao.cursor()
+        # ⚠️ ORDEM DAS COLUNAS = índices que o app.py lê da tupla 'comanda' (por número!):
+        #   [0] id_ordem          [1] id_cliente     [2] id_veiculo   [3] id_funcionario
+        #   [4] id_agendamento    [5] status         [6] forma_pagamento
+        #   [7] valor_total       [8] entrada_em     [9] inicio_em    [10] finalizacao_em
+        #   [11] desconto         [12] acrescimo     [13] parcelas    [14] valor_pago
+        #   [15] data_pagamento   [16] data_vencimento
+        # Se mudar esta ordem, ajuste abrir_detalhe() em app.py (usa 1,2,5,6,7,8,11..16).
         cursor.execute(
             """
             SELECT id_ordem, id_cliente, id_veiculo, id_funcionario, id_agendamento,
                    status, forma_pagamento, valor_total,
-                   entrada_em, inicio_em, finalizacao_em
+                   entrada_em, inicio_em, finalizacao_em,
+                   desconto, acrescimo, parcelas, valor_pago,
+                   data_pagamento, data_vencimento
             FROM ordem_servico
             WHERE id_ordem = %s;
             """,
@@ -356,6 +420,9 @@ def abrir_de_agendamento(id_agendamento, id_funcionario=None):
     try:
         cursor = conexao.cursor()
 
+        # Tudo abaixo é UMA transação (um único commit no fim): lê o agendamento,
+        # cria a comanda, copia os serviços com preço do porte e marca o agendamento
+        # como em execução. Se qualquer passo falhar, o rollback desfaz o conjunto todo.
         cursor.execute(
             "SELECT id_cliente, id_veiculo FROM agendamento WHERE id_agendamento = %s;",
             (id_agendamento,)
