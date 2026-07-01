@@ -3,7 +3,7 @@
 Sistema de gestão para lava-jato em **Python + psycopg2 + PostgreSQL**, com
 interface gráfica em **Flet** (`app.py`).
 Dependências: `psycopg2`, `bcrypt` (hash de senha no módulo funcionário), `flet`
-(interface). Ver `requirements.txt` (`pip install -r requirements.txt`).
+(interface), `reportlab` (recibo em PDF). Ver `requirements.txt` (`pip install -r requirements.txt`).
 Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida (RINEAL Analytics).
 
 ---
@@ -82,7 +82,11 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 ### Decisões de modelagem
 - **Categoria de veículo normalizada:** porte é FK (`veiculo.id_categoria` →
   `categoria_veiculo`), não texto livre. Categorias seed: Moto, Pequeno, Médio,
-  Grande, SUV, Caminhonete.
+  Grande, SUV, Caminhonete, Caminhão.
+- **Financeiro da comanda em `ordem_servico`:** `desconto`, `acrescimo`, `parcelas`,
+  `valor_pago`, `data_pagamento`, `data_vencimento` (upgrade via `ALTER TABLE ... IF NOT EXISTS`
+  no `criar_tabelas.sql`). `valor_final` (total − desconto + acréscimo) e `valor_pendente`
+  são **calculados na exibição**, não armazenados. Atualização via `salvar_financeiro()`.
 - **Preço por porte:** `servico_preco` é a matriz serviço × categoria
   (`UNIQUE(id_servico, id_categoria)`), em vez de colunas fixas por porte.
 - **Relações N:N** via tabelas de ligação: `agendamento_servico`,
@@ -102,7 +106,7 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - `cadastro_cliente.py`, `cadastro_veiculo.py` — módulos já implementados (referência de padrão).
 - `app.py` — **interface gráfica (Flet)**: login + 13 telas reaproveitando os módulos de CRUD.
   Rodar com `python app.py`. Logo da marca em `imagen/trucka car.png`.
-- `requirements.txt` — dependências (psycopg2, bcrypt, flet).
+- `requirements.txt` — dependências (psycopg2, bcrypt, flet, reportlab).
 - `documentacao_modulos_lavajato.txt` — especificação funcional dos 13 módulos.
 
 ---
@@ -111,7 +115,7 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 
 - Schema completo já criado no `lavajato_db` (22 tabelas, FKs íntegras).
 - Módulos com CRUD implementado: 1 a 10, 12 e 13. **Falta só o módulo 11 — Dashboard.**
-- Dados de teste no banco: `categoria_veiculo` (6 portes), `cliente` (id 1), `servico` (id 1 com preços),
+- Dados de teste no banco: `categoria_veiculo` (7 portes), `cliente` (id 1), `servico` (id 1 com preços),
   `veiculo` (id 1), `agendamento` (id 1), `ordem_servico` (id 1), `funcionario` (id 1),
   `produto` (id 1), `fornecedor` (id 1), `despesa` (id 1 paga, id 2 em aberto), `caixa` (id 1 fechado),
   `fidelidade_saldo` (cliente 1, 6 pontos), `plano` (id 1) + `assinatura` (id 1).
@@ -127,5 +131,9 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   - ⚠️ Flet 0.85 tem API nova: `ft.Colors`/`ft.Icons`, `ft.Alignment.CENTER`, `ft.Padding.symmetric`,
     `ft.BoxFit`, `page.show_dialog()`/`pop_dialog()`, `ft.run(main)`, `ft.Image(src=bytes)`,
     `TextField(prefix=/suffix=/helper=Control)` (não `*_text`).
+- **Financeiro da comanda + recibo:** a tela de Comandas tem formulário de pagamento
+  (desconto, acréscimo/juros, forma, parcelas, valor pago, datas de pagamento/vencimento)
+  via `salvar_financeiro()`, e gera recibo em PDF (`gerar_recibo_pdf()` com reportlab),
+  salvo em `recibos/` (pasta ignorada pelo git).
 - **Próximos passos possíveis:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
   executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.
