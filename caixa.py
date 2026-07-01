@@ -47,6 +47,8 @@ def abrir_caixa(valor_inicial=0, id_funcionario=None, observacoes=None):
     Abre um novo caixa com o fundo inicial informado.
     Falha se já existir um caixa aberto. Retorna o id_caixa, ou None.
     """
+    # Invariante do módulo: só pode haver UM caixa aberto por vez. Barra a abertura
+    # se já existir um (senão as movimentações não saberiam a qual caixa pertencem).
     if caixa_aberto():
         print("Já existe um caixa aberto. Feche-o antes de abrir outro.")
         return None
@@ -147,6 +149,10 @@ def saldo_esperado(id_caixa=None):
 
     try:
         cursor = conexao.cursor()
+        # saldo = fundo inicial + total de entradas - total de saídas.
+        # O CASE WHEN dentro do SUM soma o valor só quando o tipo bate (senão é NULL,
+        # que o SUM ignora); COALESCE(...,0) cobre o caixa ainda sem movimentos.
+        # LEFT JOIN garante que um caixa sem nenhum movimento ainda retorne uma linha.
         cursor.execute(
             """
             SELECT c.valor_inicial

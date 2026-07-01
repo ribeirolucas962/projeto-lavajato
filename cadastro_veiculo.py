@@ -6,6 +6,10 @@ Autor: RINEAL Analytics
 Funções de CRUD (Criar, Ler, Atualizar, Desativar) para a tabela veiculo.
 Cada veículo pertence a um cliente (id_cliente) e a uma categoria de porte
 (id_categoria, FK para a tabela categoria_veiculo).
+
+Segue o mesmo padrão do cadastro_cliente.py (transação try/commit/rollback/finally,
+%s parametrizado, COALESCE no update, soft delete). Veja lá os comentários do padrão;
+aqui só comentamos o que é próprio de veículo (JOINs e a ordem das colunas).
 """
 
 from conexao import conectar
@@ -85,6 +89,10 @@ def buscar_veiculos(termo=None, apenas_ativos=True):
     try:
         cursor = conexao.cursor()
 
+        # JOINs trazem o NOME do cliente (c.nome) e o NOME do porte (cat.nome) junto,
+        # para a tela mostrar texto legível sem fazer consultas extras por linha.
+        # ⚠️ Ordem das 11 colunas = tupla desempacotada em app.py.pagina_veiculos:
+        #    (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor, ativo)
         query = """
             SELECT v.id_veiculo, v.id_cliente, c.nome, v.id_categoria,
                    cat.nome, v.placa, v.marca, v.modelo, v.ano, v.cor, v.ativo
@@ -127,6 +135,11 @@ def buscar_veiculo_por_id(id_veiculo):
 
     try:
         cursor = conexao.cursor()
+        # ⚠️ ATENÇÃO: aqui a ordem é DIFERENTE de buscar_veiculos() — sem os JOINs de
+        # nome, com id_categoria (não o nome). São 9 colunas:
+        #    (id_veiculo, id_cliente, id_categoria, placa, marca, modelo, ano, cor, ativo)
+        # No app.py isto é lido como vei[1]=id_cliente e vei[3]=placa. Não confunda
+        # os índices desta função com os de buscar_veiculos().
         cursor.execute(
             """
             SELECT id_veiculo, id_cliente, id_categoria, placa, marca,

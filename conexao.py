@@ -36,6 +36,8 @@ _carregar_env()
 # CONFIGURAÇÃO DA CONEXÃO (lida do ambiente / .env)
 # ================================================================
 
+# Os .get(chave, padrao) garantem valores default se o .env não existir; a senha
+# é o único campo sem default seguro (vazio) — precisa vir do .env.
 DB_config = {
     'host': os.environ.get('DB_HOST', 'localhost'),
     'port': int(os.environ.get('DB_PORT', '5432')),
@@ -43,6 +45,9 @@ DB_config = {
     'user': os.environ.get('DB_USER', 'postgres'),
     'password': os.environ.get('DB_PASSWORD', ''),
     'client_encoding': 'utf8',
+    # Pendência conhecida (Windows): se o Postgres devolver mensagens de erro em
+    # português (Win-1252), o psycopg2 pode quebrar com UnicodeDecodeError. Se isso
+    # acontecer, adicione aqui:  'options': '-c lc_messages=C'
 }
 
 

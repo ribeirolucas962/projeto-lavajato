@@ -5,6 +5,10 @@ Autor: RINEAL Analytics
 
 CRUD da tabela fornecedor. Os produtos de cada fornecedor são consultados
 via produto.id_fornecedor (módulo de estoque).
+
+CRUD idêntico ao padrão do cadastro_cliente.py (transação, %s, COALESCE, soft delete
+— veja lá os comentários). O único extra é produtos_do_fornecedor(), que faz o
+caminho inverso: dado um fornecedor, lista os produtos que apontam para ele.
 """
 
 from conexao import conectar

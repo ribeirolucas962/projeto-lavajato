@@ -5,6 +5,12 @@ Autor: RINEAL Analytics
 
 CRUD da tabela servico (catálogo de serviços) + gestão da matriz de preços
 em servico_preco (um preço por combinação serviço x categoria de porte).
+
+O CRUD de servico segue o padrão do cadastro_cliente.py (veja lá os comentários do
+padrão comum). A parte específica deste módulo é a MATRIZ DE PREÇOS: em vez de uma
+coluna de preço por porte, cada par (serviço, categoria) é uma linha em servico_preco
+com UNIQUE(id_servico, id_categoria). Assim dá para ter preços diferentes por porte
+sem alterar o schema quando surge um porte novo.
 """
 
 from conexao import conectar
@@ -224,6 +230,9 @@ def definir_preco(id_servico, id_categoria, preco):
 
     try:
         cursor = conexao.cursor()
+        # UPSERT: tenta inserir; se já existe o par (id_servico, id_categoria) — a
+        # constraint UNIQUE dispara o ON CONFLICT — atualiza o preço em vez de duplicar.
+        # EXCLUDED.preco é o valor que teria sido inserido (o novo preço passado).
         cursor.execute(
             """
             INSERT INTO servico_preco (id_servico, id_categoria, preco)
@@ -316,6 +325,8 @@ def precos_do_servico(id_servico):
 
     try:
         cursor = conexao.cursor()
+        # Só retorna as categorias que JÁ têm preço (parte de servico_preco). Portes
+        # sem preço não aparecem — é assim que o app.py conta "quantos portes têm preço".
         cursor.execute(
             """
             SELECT cat.id_categoria, cat.nome, sp.preco

@@ -22,6 +22,9 @@ FUNCOES_VALIDAS = ('lavador', 'caixa', 'gerente')
 
 def gerar_hash(senha):
     """Gera o hash bcrypt de uma senha em texto puro. Retorna str."""
+    # gensalt() cria um sal aleatório novo a cada chamada; o bcrypt embute esse sal
+    # DENTRO do próprio hash. Por isso a mesma senha gera hashes diferentes toda vez,
+    # e não precisamos guardar o sal separado. Guardamos o hash como texto (str).
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
@@ -30,6 +33,8 @@ def verificar_senha(senha, senha_hash):
     if not senha_hash:
         return False
     try:
+        # checkpw reextrai o sal de dentro do hash e recompara — nunca "descriptografa"
+        # (bcrypt é mão única). except: hash malformado/None não derruba o login.
         return bcrypt.checkpw(senha.encode('utf-8'), senha_hash.encode('utf-8'))
     except (ValueError, TypeError):
         return False
@@ -240,6 +245,9 @@ def autenticar(login, senha):
             (login,)
         )
         funcionario = cursor.fetchone()
+        # funcionario[3] = senha_hash. Só é buscado aqui (as listagens NÃO trazem o
+        # hash). Se a senha confere, devolve (id, nome, funcao) — o [:3] descarta o
+        # hash para ele nunca sair desta função. É essa tupla que o app.py usa na sessão.
         if funcionario and verificar_senha(senha, funcionario[3]):
             return funcionario[:3]   # sem o hash
         return None

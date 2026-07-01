@@ -207,6 +207,8 @@ def excluir_despesa(id_despesa):
     Exclui uma despesa de fato (a tabela não tem soft delete).
     Retorna True se removeu, False caso contrário.
     """
+    # ⚠️ DELETE definitivo (diferente dos outros módulos, que só desativam). Não há
+    # como "reativar" depois. Por isso o app.py pede confirmação extra ao excluir.
     conexao = conectar()
     if not conexao:
         return False
@@ -234,6 +236,10 @@ def total_por_periodo(data_inicio, data_fim, base='vencimento'):
       - base='pagamento':  considera data_pagamento (despesas efetivamente pagas).
     Retorna o total (Decimal/0).
     """
+    # 'coluna' é escolhida entre DOIS valores fixos do código (nunca vem do usuário) —
+    # por isso é seguro interpolá-la na query com f-string. Nome de COLUNA não pode
+    # ser passado como parâmetro %s (só valores podem); as datas continuam via %s.
+    # Não passe entrada do usuário para 'base': isso abriria brecha de SQL injection.
     coluna = 'data_pagamento' if base == 'pagamento' else 'data_vencimento'
 
     conexao = conectar()

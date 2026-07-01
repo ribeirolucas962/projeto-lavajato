@@ -402,7 +402,9 @@ def registrar_uso(id_assinatura, id_servico, id_ordem=None):
             return None
         quantidade_mes = cota[0]
 
-        # Quanto já usou neste mês
+        # Quanto já usou NESTE mês. date_trunc('month', data) zera o dia/hora, deixando
+        # só ano-mês; comparar as duas versões trunca = "estão no mesmo mês/ano".
+        # A cota é mensal e reinicia sozinha ao virar o mês (não precisa "resetar" nada).
         cursor.execute(
             """
             SELECT COUNT(*)
@@ -414,6 +416,7 @@ def registrar_uso(id_assinatura, id_servico, id_ordem=None):
         )
         usado = cursor.fetchone()[0]
 
+        # Bloqueia se já bateu a cota do mês (usado >= cota). É a regra central do módulo.
         if usado >= quantidade_mes:
             print(f"Limite mensal atingido para o serviço {id_servico}: "
                   f"{usado}/{quantidade_mes} usados.")
@@ -453,6 +456,11 @@ def saldo_servicos_mes(id_assinatura):
 
     try:
         cursor = conexao.cursor()
+        # ⚠️ Detalhe importante: o filtro de mês está na condição do LEFT JOIN (ON ...),
+        # NÃO no WHERE. Isso é proposital: mantém na lista TODOS os serviços do plano,
+        # inclusive os com 0 uso no mês (usado=0, restante=cota). Se esse filtro fosse
+        # para o WHERE, os serviços nunca usados desapareceriam do resumo.
+        # COUNT(u.id_uso) conta só os usos que casaram no JOIN (do mês vigente).
         cursor.execute(
             """
             SELECT ps.id_servico, s.nome, ps.quantidade_mes,

@@ -62,6 +62,9 @@ def buscar_produtos(termo=None, apenas_ativos=True):
     try:
         cursor = conexao.cursor()
 
+        # LEFT JOIN (não JOIN): o fornecedor é opcional. Com LEFT, produtos SEM
+        # fornecedor ainda aparecem (com f.nome_razao_social = NULL). Um JOIN normal
+        # sumiria com eles da lista.
         query = """
             SELECT p.id_produto, p.nome, p.unidade_medida, p.quantidade,
                    p.estoque_minimo, p.custo_unitario, f.nome_razao_social, p.ativo
@@ -263,7 +266,9 @@ def registrar_saida(id_produto, quantidade, observacao=None):
     try:
         cursor = conexao.cursor()
 
-        # Trava a linha do produto e confere o saldo antes de subtrair
+        # FOR UPDATE trava ESTA linha do produto até o commit/rollback. Sem isso, duas
+        # saídas simultâneas poderiam ler o mesmo saldo e ambas subtrair, deixando o
+        # estoque negativo (condição de corrida). Com a trava, a 2ª espera a 1ª terminar.
         cursor.execute(
             "SELECT quantidade FROM produto WHERE id_produto = %s FOR UPDATE;",
             (id_produto,)
@@ -274,6 +279,7 @@ def registrar_saida(id_produto, quantidade, observacao=None):
             conexao.rollback()
             return None
 
+        # Recusa a saída se não há saldo — nunca deixa a quantidade ficar negativa.
         saldo_atual = linha[0]
         if saldo_atual < quantidade:
             print(f"Saldo insuficiente: disponível {saldo_atual}, solicitado {quantidade}.")

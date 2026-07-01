@@ -51,6 +51,10 @@ def acumular_pontos(id_cliente, pontos, id_ordem=None, descricao=None):
     try:
         cursor = conexao.cursor()
 
+        # UPSERT que SOMA (não sobrescreve): se o cliente ainda não tem linha de saldo,
+        # cria com 'pontos'; se já tem, ACUMULA (saldo_atual + pontos). Note o
+        # "fidelidade_saldo.pontos + EXCLUDED.pontos" — sem esse '+', o saldo seria
+        # substituído em vez de somado (compare com definir_preco, que sobrescreve).
         cursor.execute(
             """
             INSERT INTO fidelidade_saldo (id_cliente, pontos)
@@ -166,6 +170,9 @@ def acumular_por_comanda(id_ordem, pontos=1, descricao=None):
             return None
         id_cliente = linha[0]
 
+        # Idempotência: se JÁ existe um movimento de 'acumulo' para esta comanda, não
+        # credita de novo. Evita pontos em dobro se a função for chamada 2x pela mesma
+        # comanda (ex.: reprocessamento). O LIMIT 1 para na primeira ocorrência.
         cursor.execute(
             """
             SELECT 1 FROM fidelidade_movimento

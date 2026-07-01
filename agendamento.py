@@ -40,7 +40,12 @@ def verificar_conflito(data_hora, duracao_estimada_min, box,
     try:
         cursor = conexao.cursor()
 
-        # Sobreposição de intervalos: novo_inicio < fim_existente AND inicio_existente < novo_fim
+        # Dois intervalos [inicioA, fimA] e [inicioB, fimB] se SOBREPÕEM quando
+        # inicioA < fimB E inicioB < fimA. Aqui A = o novo, B = o já existente:
+        #   1ª condição: novo_inicio (%s) < fim_existente (data_hora + duração existente)
+        #   2ª condição: inicio_existente (data_hora) < novo_fim (novo_inicio + duração)
+        # `|| ' minutes'` monta o texto e ::interval converte em intervalo de tempo.
+        # status = ANY(%s): só conta agendamentos que ainda ocupam o box (STATUS_ATIVOS).
         query = """
             SELECT id_agendamento, data_hora, duracao_estimada_min, status
             FROM agendamento
@@ -105,7 +110,10 @@ def criar_agendamento(id_cliente, id_veiculo, data_hora, servicos=None,
         )
         id_agendamento = cursor.fetchone()[0]
 
-        # Vincula os serviços desejados (ignora duplicados na própria lista)
+        # Mesma transação: insere o agendamento E seus serviços. set() remove ids
+        # repetidos na lista; ON CONFLICT DO NOTHING evita erro se o par já existir.
+        # Como não há commit no meio, se um serviço falhar o rollback desfaz TUDO
+        # (não fica agendamento sem os serviços).
         for id_servico in set(servicos or []):
             cursor.execute(
                 """

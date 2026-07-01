@@ -19,6 +19,9 @@ def criar_tabelas():
         return False
 
     try:
+        # Lê o script inteiro e executa de uma vez. O criar_tabelas.sql é idempotente
+        # (CREATE TABLE IF NOT EXISTS / ON CONFLICT), então rodar de novo não quebra
+        # nem duplica dados — pode reexecutar à vontade para recriar o schema.
         with open(SQL_FILE, "r", encoding="utf-8") as f:
             sql = f.read()
 

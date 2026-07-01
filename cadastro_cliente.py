@@ -4,6 +4,24 @@ Sistema: Lava-Jato
 Autor: RINEAL Analytics
 
 Funções de CRUD (Criar, Ler, Atualizar, Desativar) para a tabela cliente.
+
+------------------------------------------------------------------------------
+MÓDULO DE REFERÊNCIA — o padrão comentado aqui vale para TODOS os módulos backend
+------------------------------------------------------------------------------
+Toda função de banco segue a mesma "receita" (veja também o CLAUDE.md):
+  1. conexao = conectar(); se falhar (None), retorna cedo um valor "vazio"
+     (None / [] / False) — nunca segue sem conexão.
+  2. try:    executa a query e dá commit() (nas escritas);
+     except: imprime o erro e faz rollback() (desfaz escrita pela metade);
+     finally: cursor.close() + conexao.close() (sempre libera a conexão).
+  3. Queries SEMPRE parametrizadas com %s (nunca f-string com dado do usuário)
+     — é a proteção contra SQL injection.
+  4. Soft delete: desativar_*/reativar_* trocam a coluna 'ativo' em vez de DELETE,
+     preservando o histórico.
+  5. Update parcial: SET campo = COALESCE(%s, campo) só altera o que vier != None.
+
+⚠️ A ORDEM das colunas nos SELECT abaixo é a MESMA ordem em que o app.py desempacota
+as tuplas (ex.: `(idc, nome, cpf, tel, ...) = c`). Mudou a coluna aqui? Ajuste lá.
 """
 
 from conexao import conectar
@@ -29,11 +47,13 @@ def inserir_cliente(nome, cpf_cnpj=None, telefone=None, email=None,
             """,
             (nome, cpf_cnpj, telefone, email, endereco, observacoes)
         )
+        # RETURNING devolve o id gerado (SERIAL) na mesma query — evita um SELECT extra.
         id_cliente = cursor.fetchone()[0]
-        conexao.commit()
+        conexao.commit()   # confirma a escrita; sem isso o INSERT seria descartado
         return id_cliente
 
     except Exception as erro:
+        # Qualquer falha desfaz a transação inteira (não deixa registro pela metade).
         print(f"Erro ao inserir cliente: {erro}")
         conexao.rollback()
         return None
@@ -55,6 +75,8 @@ def buscar_clientes(termo=None, apenas_ativos=True):
     try:
         cursor = conexao.cursor()
 
+        # "WHERE 1=1" é um truque para montar o filtro dinamicamente: cada condição
+        # opcional vira só um "AND ..." sem precisar checar se é a primeira cláusula.
         query = "SELECT id_cliente, nome, cpf_cnpj, telefone, email, endereco, observacoes, ativo FROM cliente WHERE 1=1"
         parametros = []
 
@@ -62,6 +84,8 @@ def buscar_clientes(termo=None, apenas_ativos=True):
             query += " AND ativo = TRUE"
 
         if termo:
+            # ILIKE = busca parcial e sem diferenciar maiúsculas; %termo% casa em qualquer
+            # posição. O termo entra como PARÂMETRO (%s), não concatenado — sem injection.
             query += " AND (nome ILIKE %s OR telefone ILIKE %s)"
             parametros.extend([f"%{termo}%", f"%{termo}%"])
 
@@ -124,6 +148,9 @@ def editar_cliente(id_cliente, nome=None, cpf_cnpj=None, telefone=None,
 
     try:
         cursor = conexao.cursor()
+        # COALESCE(%s, campo): se o parâmetro vier None, mantém o valor atual da coluna;
+        # se vier preenchido, sobrescreve. Assim dá para atualizar só alguns campos.
+        # ⚠️ Efeito colateral: NÃO dá para "limpar" um campo (passar None não apaga).
         cursor.execute(
             """
             UPDATE cliente
@@ -139,6 +166,7 @@ def editar_cliente(id_cliente, nome=None, cpf_cnpj=None, telefone=None,
             (nome, cpf_cnpj, telefone, email, endereco, observacoes, id_cliente)
         )
         conexao.commit()
+        # rowcount > 0 => alguma linha foi afetada (id existia). False => id inexistente.
         return cursor.rowcount > 0
 
     except Exception as erro:
@@ -162,6 +190,8 @@ def desativar_cliente(id_cliente):
 
     try:
         cursor = conexao.cursor()
+        # Soft delete: apenas marca ativo=FALSE. O registro continua no banco (e nas
+        # comandas/histórico); some só das listas que filtram por apenas_ativos=True.
         cursor.execute(
             "UPDATE cliente SET ativo = FALSE, atualizado_em = NOW() WHERE id_cliente = %s;",
             (id_cliente,)
