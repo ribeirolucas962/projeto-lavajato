@@ -72,7 +72,7 @@ ao `DB_config` em `conexao.py`.
 | 8 | Fornecedores | `fornecedor` | `fornecedores.py` | ✅ CRUD feito |
 | 9 | Despesa | `despesa` | `despesa.py` | ✅ CRUD feito |
 | 10 | Caixa | `caixa`, `caixa_movimento` | `caixa.py` | ✅ CRUD feito |
-| 11 | Dashboard | *(sem tabela — só consultas)* | `dashboard.py` | ⬜ vazio |
+| 11 | Dashboard | *(sem tabela — só consultas)* | `dashboard.py` | ✅ consultas feitas |
 | 12 | Fidelidade | `fidelidade_saldo`, `fidelidade_movimento` | `fidelidade.py` | ✅ CRUD feito |
 | 13 | Planos e Assinaturas | `plano`, `plano_servico`, `assinatura`, `assinatura_uso` | `planos_assinaturas.py` | ✅ CRUD feito |
 
@@ -104,6 +104,7 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - `conexao.py` — conexão única com o banco.
 - `criar_tabelas.sql` / `criar_tabelas.py` — schema e criação das tabelas.
 - `cadastro_cliente.py`, `cadastro_veiculo.py` — módulos já implementados (referência de padrão).
+- `dashboard.py` — consultas somente leitura dos indicadores do Dashboard.
 - `app.py` — **interface gráfica (Flet)**: login + 13 telas reaproveitando os módulos de CRUD.
   Rodar com `python app.py`. Logo da marca em `imagen/trucka car.png`.
 - `requirements.txt` — dependências (psycopg2, bcrypt, flet, reportlab).
@@ -114,15 +115,20 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 ## Estado atual / Próximos passos
 
 - Schema completo já criado no `lavajato_db` (22 tabelas, FKs íntegras).
-- Módulos com CRUD implementado: 1 a 10, 12 e 13. **Falta só o módulo 11 — Dashboard.**
+- **Backend dos 13 módulos completo** (CRUD nos módulos 1–10, 12 e 13; consultas de
+  indicadores no 11 — `dashboard.py`).
 - Dados de teste no banco: `categoria_veiculo` (7 portes), `cliente` (id 1), `servico` (id 1 com preços),
   `veiculo` (id 1), `agendamento` (id 1), `ordem_servico` (id 1), `funcionario` (id 1),
   `produto` (id 1), `fornecedor` (id 1), `despesa` (id 1 paga, id 2 em aberto), `caixa` (id 1 fechado),
   `fidelidade_saldo` (cliente 1, 6 pontos), `plano` (id 1) + `assinatura` (id 1).
-- **Módulo 11 (Dashboard): ADIADO** por decisão do usuário — será feito junto com o frontend
-  (os indicadores viram gráficos). Indicadores previstos: faturamento por período, serviço mais
-  vendido, ticket médio, taxa de retorno, tempo médio por serviço, horários de pico, fila atual.
-- **Backend de CRUD essencialmente completo** (12 de 13 módulos).
+- **Módulo 11 (Dashboard): implementado como cards de KPI.** `dashboard.py` concentra as
+  consultas (somente leitura): `faturamento('hoje'/'mes')`, `ticket_medio(dias)`,
+  `servicos_mais_vendidos(dias, limite)`, `taxa_retorno(dias)`, `tempo_medio_servico(dias)`
+  e `horarios_pico(dias)` — `python dashboard.py` imprime todos (teste rápido).
+  Faturamento/ticket usam o **valor final** (valor_total − desconto + acréscimo).
+  A tela Dashboard do `app.py` mostra 11 cards (via `mod_dash`); **gráficos ficaram para
+  depois** (avaliar no decorrer da construção — `horarios_pico`/`servicos_mais_vendidos`
+  já devolvem séries prontas para virar barras).
 - **Frontend feito em Flet (`app.py`)** — stack escolhida: Flet (Python puro, `flet==0.85.3`).
   Login real via `autenticar()` + 13 telas reaproveitando os módulos, sem alterar o backend.
   Telas com CRUD: Clientes, Veículos, Serviços (+preços por porte), Agendamentos, Comandas,

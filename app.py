@@ -14,8 +14,8 @@ GUIA DE LEITURA (mapa do arquivo, de cima para baixo)
 ------------------------------------------------------------------------------
 1. Paleta/identidade visual (COR_*) e helpers de formatação (brl, fmt_dt, ...).
 2. gerar_recibo_pdf()  -> monta o recibo da comanda em PDF (reportlab).
-3. _faturamento()      -> consulta de dashboard (soma faturamento por período).
-4. main(page)          -> TODA a aplicação vive aqui dentro (closures aninhados):
+   (os indicadores do Dashboard são calculados em dashboard.py -> mod_dash)
+3. main(page)          -> TODA a aplicação vive aqui dentro (closures aninhados):
      - helpers de UI (abrir/fechar diálogo, aviso, cabeçalho de diálogo);
      - tela_login();
      - "shell" principal (sidebar + área de conteúdo) e navegação entre telas;
@@ -45,7 +45,6 @@ import os
 from datetime import datetime
 import flet as ft
 
-from conexao import conectar
 import funcionario as mod_func
 import cadastro_cliente as mod_cli
 import cadastro_veiculo as mod_veic
@@ -56,6 +55,7 @@ import estoque as mod_estoque
 import fornecedores as mod_forn
 import planos_assinaturas as mod_planos
 import caixa as mod_caixa
+import dashboard as mod_dash
 
 # ================================================================
 # Paleta / identidade visual — cores da marca Truck Center Lavação
@@ -221,37 +221,6 @@ def gerar_recibo_pdf(caminho, ctx):
         ParagraphStyle("foot", parent=styles["Normal"], fontSize=8,
                        textColor=colors.grey, alignment=1)))
     doc.build(elems)
-
-
-# ================================================================
-# Consultas auxiliares para o Dashboard (somente leitura)
-# ================================================================
-
-def _faturamento(periodo):
-    """Soma valor_total das comandas finalizadas/entregues no período ('hoje' ou 'mes')."""
-    conexao = conectar()
-    if not conexao:
-        return 0.0
-    try:
-        cursor = conexao.cursor()
-        if periodo == "hoje":
-            filtro = "entrada_em::date = CURRENT_DATE"
-        else:
-            filtro = "date_trunc('month', entrada_em) = date_trunc('month', CURRENT_DATE)"
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(valor_total), 0)
-            FROM ordem_servico
-            WHERE status IN ('finalizado', 'entregue') AND {filtro};
-            """
-        )
-        return float(cursor.fetchone()[0] or 0)
-    except Exception as erro:
-        print(f"Erro ao calcular faturamento: {erro}")
-        return 0.0
-    finally:
-        cursor.close()
-        conexao.close()
 
 
 # ================================================================
@@ -492,15 +461,16 @@ def main(page: ft.Page):
             linha.controls.append(acao)
         return linha
 
-    def card_kpi(titulo, valor, icone, cor):
+    def card_kpi(titulo, valor, icone, cor, tamanho=24):
         # Cartão de indicador do Dashboard: rótulo + número grande + ícone colorido.
+        # 'tamanho' menor serve para valores em texto (ex.: nome do serviço campeão).
         return ft.Container(
             width=250, padding=20, bgcolor=COR_CARD, border_radius=12,
             shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)),
             content=ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[
-                ft.Column(spacing=4, controls=[
+                ft.Column(spacing=4, expand=True, controls=[
                     ft.Text(titulo, size=13, color=ft.Colors.GREY_600),
-                    ft.Text(str(valor), size=24, weight=ft.FontWeight.BOLD),
+                    ft.Text(str(valor), size=tamanho, weight=ft.FontWeight.BOLD),
                 ]),
                 ft.Container(
                     width=48, height=48, border_radius=10,
@@ -529,18 +499,37 @@ def main(page: ft.Page):
     # ============================================================
     def pagina_dashboard():
         # Cada KPI é uma consulta independente ao backend; aqui só contamos/somamos
-        # os resultados. Sem tabela própria — o Dashboard vive só de leitura.
+        # os resultados. Sem tabela própria — o Dashboard vive só de leitura
+        # (os indicadores calculados no banco ficam em dashboard.py -> mod_dash).
         clientes = mod_cli.buscar_clientes()
         servicos = mod_serv.buscar_servicos()
         comandas_abertas = mod_os.buscar_comandas(somente_abertas=True)
         abaixo_min = mod_estoque.produtos_abaixo_minimo()   # produtos no vermelho
         caixa = mod_caixa.caixa_aberto()                    # None se não há caixa aberto
-        fat_hoje = _faturamento("hoje")
-        fat_mes = _faturamento("mes")
+        fat_hoje = mod_dash.faturamento("hoje")
+        fat_mes = mod_dash.faturamento("mes")
+        ticket = mod_dash.ticket_medio(30)
+        mais_vendidos = mod_dash.servicos_mais_vendidos(30)  # [(nome, qtd, total), ...]
+        taxa = mod_dash.taxa_retorno(90)
+        tempo = mod_dash.tempo_medio_servico(30)             # minutos, ou None sem dados
+        horas = mod_dash.horarios_pico(30)                   # [(hora, qtd), ...]
+        # Hora com mais entradas de comanda no período (None se não houve movimento).
+        hora_pico = max(horas, key=lambda h: h[1])[0] if horas else None
 
         kpis = ft.Row(wrap=True, spacing=16, run_spacing=16, controls=[
             card_kpi("Faturamento hoje", brl(fat_hoje), ft.Icons.TODAY, ft.Colors.GREEN_600),
             card_kpi("Faturamento no mês", brl(fat_mes), ft.Icons.CALENDAR_MONTH, ft.Colors.BLUE_600),
+            card_kpi("Ticket médio (30 dias)", brl(ticket), ft.Icons.PRICE_CHECK, ft.Colors.CYAN_700),
+            card_kpi("Serviço mais vendido (30 dias)",
+                     mais_vendidos[0][0] if mais_vendidos else "—",
+                     ft.Icons.STAR, ft.Colors.AMBER_700, tamanho=17),
+            card_kpi("Taxa de retorno (90 dias)", f"{taxa:.0f}%", ft.Icons.REPLAY, ft.Colors.INDIGO_600),
+            card_kpi("Tempo médio de serviço (30 dias)",
+                     f"{tempo:.0f} min" if tempo is not None else "—",
+                     ft.Icons.TIMER, ft.Colors.BROWN_600),
+            card_kpi("Horário de pico (30 dias)",
+                     f"{hora_pico:02d}h" if hora_pico is not None else "—",
+                     ft.Icons.SCHEDULE, ft.Colors.DEEP_ORANGE_600),
             card_kpi("Comandas abertas", len(comandas_abertas), ft.Icons.RECEIPT_LONG, ft.Colors.ORANGE_700),
             card_kpi("Clientes ativos", len(clientes), ft.Icons.PEOPLE, ft.Colors.PURPLE_600),
             card_kpi("Serviços no catálogo", len(servicos), ft.Icons.LOCAL_CAR_WASH, ft.Colors.TEAL_600),
