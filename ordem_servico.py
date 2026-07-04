@@ -305,10 +305,47 @@ def salvar_financeiro(id_ordem, desconto=None, acrescimo=None, forma_pagamento=N
         conexao.close()
 
 
-def buscar_comandas(status=None, id_cliente=None, somente_abertas=False):
+def salvar_observacoes(id_ordem, avarias=None, observacoes=None):
+    """
+    Salva a vistoria de entrada (avarias / danos observados na chegada) e as
+    observações gerais da comanda. Diferente do financeiro, aqui é atribuição
+    direta (não COALESCE): passar '' ou None LIMPA o campo — o formulário sempre
+    envia os dois valores juntos. Retorna True se atualizou, False caso contrário.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            UPDATE ordem_servico
+            SET avarias       = %s,
+                observacoes   = %s,
+                atualizado_em = NOW()
+            WHERE id_ordem = %s;
+            """,
+            (avarias, observacoes, id_ordem)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except Exception as erro:
+        print(f"Erro ao salvar observações da comanda: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def buscar_comandas(status=None, id_cliente=None, id_veiculo=None, somente_abertas=False):
     """
     Lista comandas com filtros opcionais. Traz nome do cliente e placa do veículo.
     'somente_abertas' = exclui as já entregues/canceladas (útil para o painel de fila).
+    'id_veiculo' filtra o histórico de um veículo específico (tela Veículos > Histórico).
     """
     conexao = conectar()
     if not conexao:
@@ -333,6 +370,9 @@ def buscar_comandas(status=None, id_cliente=None, somente_abertas=False):
         if id_cliente:
             query += " AND o.id_cliente = %s"
             parametros.append(id_cliente)
+        if id_veiculo:
+            query += " AND o.id_veiculo = %s"
+            parametros.append(id_veiculo)
         if somente_abertas:
             query += " AND o.status NOT IN ('entregue', 'cancelado')"
 
@@ -367,15 +407,15 @@ def buscar_comanda_por_id(id_ordem):
         #   [4] id_agendamento    [5] status         [6] forma_pagamento
         #   [7] valor_total       [8] entrada_em     [9] inicio_em    [10] finalizacao_em
         #   [11] desconto         [12] acrescimo     [13] parcelas    [14] valor_pago
-        #   [15] data_pagamento   [16] data_vencimento
-        # Se mudar esta ordem, ajuste abrir_detalhe() em app.py (usa 1,2,5,6,7,8,11..16).
+        #   [15] data_pagamento   [16] data_vencimento  [17] avarias   [18] observacoes
+        # Se mudar esta ordem, ajuste abrir_detalhe() em app.py (usa 1,2,5,6,7,8,11..18).
         cursor.execute(
             """
             SELECT id_ordem, id_cliente, id_veiculo, id_funcionario, id_agendamento,
                    status, forma_pagamento, valor_total,
                    entrada_em, inicio_em, finalizacao_em,
                    desconto, acrescimo, parcelas, valor_pago,
-                   data_pagamento, data_vencimento
+                   data_pagamento, data_vencimento, avarias, observacoes
             FROM ordem_servico
             WHERE id_ordem = %s;
             """,
@@ -385,11 +425,14 @@ def buscar_comanda_por_id(id_ordem):
         if not comanda:
             return None
 
+        # LEFT JOIN em funcionario para trazer QUEM executou cada serviço (pode ser NULL).
+        # Tupla do item: (id_item, nome_servico, preco_aplicado, nome_funcionario).
         cursor.execute(
             """
-            SELECT i.id_item, s.nome, i.preco_aplicado
+            SELECT i.id_item, s.nome, i.preco_aplicado, f.nome
             FROM ordem_servico_item i
             JOIN servico s ON s.id_servico = i.id_servico
+            LEFT JOIN funcionario f ON f.id_funcionario = i.id_funcionario
             WHERE i.id_ordem = %s
             ORDER BY i.id_item;
             """,

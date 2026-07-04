@@ -220,6 +220,8 @@ CREATE TABLE IF NOT EXISTS ordem_servico (
     valor_pago       NUMERIC(10,2) DEFAULT 0 CHECK (valor_pago >= 0),
     data_pagamento   DATE,
     data_vencimento  DATE,
+    avarias          TEXT,              -- vistoria de entrada: danos observados na chegada
+    observacoes      TEXT,              -- observações gerais da comanda
     entrada_em       TIMESTAMP DEFAULT NOW(),
     inicio_em        TIMESTAMP,
     finalizacao_em   TIMESTAMP,
@@ -234,6 +236,8 @@ ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS parcelas        SMALLINT     
 ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS valor_pago      NUMERIC(10,2) DEFAULT 0;
 ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS data_pagamento  DATE;
 ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS data_vencimento DATE;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS avarias         TEXT;
+ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS observacoes     TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_ordem_status  ON ordem_servico(status);
 CREATE INDEX IF NOT EXISTS idx_ordem_cliente ON ordem_servico(id_cliente);

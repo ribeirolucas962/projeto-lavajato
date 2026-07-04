@@ -52,7 +52,7 @@ DADOS ARMAZENADOS:
 - Marca e modelo
 - Ano
 - Cor
-- Categoria de porte (Pequeno / Médio / Grande / SUV / Caminhonete / Moto)
+- Categoria de porte (Pequeno / Médio / Grande / SUV / Caminhonete / Moto/ CAMINHAO)
 - Cliente vinculado
 
 FUNCIONALIDADES:

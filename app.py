@@ -167,16 +167,18 @@ def gerar_recibo_pdf(caminho, ctx):
     elems.append(t_info)
 
     elems.append(Paragraph("Serviços", secao))
-    serv_rows = [["Serviço", "Valor"]] + [[n, brl(p)] for n, p in ctx["itens"]]
+    # ctx["itens"] = [(nome_servico, nome_lavador|None, preco), ...]
+    serv_rows = [["Serviço", "Lavador", "Valor"]] + \
+                [[n, (lav or "—"), brl(p)] for n, lav, p in ctx["itens"]]
     if len(serv_rows) == 1:
-        serv_rows.append(["(nenhum)", ""])
-    t_serv = Table(serv_rows, colWidths=[120 * mm, 40 * mm])
+        serv_rows.append(["(nenhum)", "", ""])
+    t_serv = Table(serv_rows, colWidths=[86 * mm, 44 * mm, 30 * mm])
     t_serv.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F6FB")]),
         ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
@@ -214,6 +216,13 @@ def gerar_recibo_pdf(caminho, ctx):
         ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     elems.append(t_pag)
+
+    # Vistoria de entrada: só sai no recibo se houver avarias registradas. Serve de
+    # comprovante de que o dano já existia na chegada do veículo.
+    if ctx.get("avarias"):
+        elems.append(Paragraph("Vistoria de entrada", secao))
+        elems.append(Paragraph(str(ctx["avarias"]),
+                               ParagraphStyle("avar", parent=styles["Normal"], fontSize=10)))
 
     elems.append(Spacer(1, 16))
     elems.append(Paragraph(
@@ -1091,6 +1100,8 @@ def main(page: ft.Page):
             # ordem_servico.buscar_comanda_por_id() — confira lá se algo sair errado.
             id_cliente, id_veiculo = comanda[1], comanda[2]
             status, forma, total, entrada = comanda[5], comanda[6], comanda[7], comanda[8]
+            avarias_atual = comanda[17]      # vistoria de entrada (danos na chegada)
+            obs_atual = comanda[18]          # observações gerais da comanda
             # Comanda entregue/cancelada é "travada": desabilita edição de itens/status.
             finalizada = status in ("entregue", "cancelado")
 
@@ -1107,11 +1118,19 @@ def main(page: ft.Page):
             # Itens
             if itens:
                 linhas_itens = []
-                for (id_item, nome_serv, preco) in itens:
+                for (id_item, nome_serv, preco, exec_nome) in itens:
+                    # Serviço + quem executou (lavador). Sem responsável fica em laranja
+                    # para chamar atenção de que ninguém foi atribuído àquele serviço.
+                    col_serv = ft.Column(spacing=0, expand=True, controls=[
+                        ft.Text(nome_serv),
+                        ft.Text(f"Lavou: {exec_nome}" if exec_nome else "Sem responsável",
+                                size=11,
+                                color=ft.Colors.GREY_500 if exec_nome else ft.Colors.ORANGE_700),
+                    ])
                     linhas_itens.append(ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         controls=[
-                            ft.Text(nome_serv, expand=True),
+                            col_serv,
                             ft.Text(brl(preco)),
                             ft.IconButton(
                                 ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.RED_400,
@@ -1128,6 +1147,13 @@ def main(page: ft.Page):
             dd_serv = ft.Dropdown(
                 label="Adicionar serviço", expand=True,
                 options=[ft.dropdown.Option(key=str(s[0]), text=s[1]) for s in servicos])
+            # Quem vai lavar: lista de funcionários ativos. Já vem pré-selecionado o
+            # usuário logado (o mais comum é quem está no balcão lançar o próprio serviço).
+            funcionarios = mod_func.buscar_funcionarios(apenas_ativos=True)
+            dd_func = ft.Dropdown(
+                label="Quem lavou", width=200,
+                value=str(sessao["id"]) if sessao["id"] else None,
+                options=[ft.dropdown.Option(key=str(f[0]), text=f[1]) for f in funcionarios])
 
             def add_serv(e):
                 # adicionar_servico devolve None quando o serviço não tem preço para o
@@ -1135,8 +1161,10 @@ def main(page: ft.Page):
                 # Nesse caso avisamos em vez de adicionar um item sem valor.
                 if not dd_serv.value:
                     return
+                # Funcionário escolhido no dropdown (cai no logado se nada for selecionado).
+                id_func = int(dd_func.value) if dd_func.value else (sessao["id"] or None)
                 r = mod_os.adicionar_servico(id_ordem, int(dd_serv.value),
-                                             id_funcionario=sessao["id"] or None)
+                                             id_funcionario=id_func)
                 if r is None:
                     aviso("Sem preço definido",
                           "Esse serviço não tem preço para o porte deste veículo. "
@@ -1146,6 +1174,7 @@ def main(page: ft.Page):
 
             linha_add = ft.Row(spacing=10, controls=[
                 dd_serv,
+                dd_func,
                 ft.FilledButton("Adicionar", icon=ft.Icons.ADD, on_click=add_serv,
                                 disabled=finalizada,
                                 style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
@@ -1162,6 +1191,35 @@ def main(page: ft.Page):
                 botao_status("Finalizado", "finalizado", ft.Colors.GREEN_700),
                 botao_status("Entregue", "entregue", ft.Colors.TEAL_700),
                 botao_status("Cancelar", "cancelado", ft.Colors.RED_600),
+            ])
+
+            # ----- Vistoria de entrada / Observações -----
+            # 'avarias' = danos do veículo observados na chegada (protege o lava-jato de
+            # reclamação de dano pré-existente). 'observacoes' = anotações gerais.
+            f_avarias = ft.TextField(
+                label="Avarias na entrada (riscos, amassados, faltando peça...)",
+                value=avarias_atual or "", multiline=True, min_lines=2, max_lines=4,
+                disabled=finalizada)
+            f_obs = ft.TextField(
+                label="Observações gerais", value=obs_atual or "",
+                multiline=True, min_lines=2, max_lines=3, disabled=finalizada)
+            vistoria_msg = ft.Text("", size=12, color=ft.Colors.GREEN_700)
+
+            def salvar_vistoria(e):
+                ok = mod_os.salvar_observacoes(
+                    id_ordem,
+                    avarias=(f_avarias.value or "").strip() or None,
+                    observacoes=(f_obs.value or "").strip() or None)
+                vistoria_msg.value = "Vistoria salva." if ok else "Não foi possível salvar."
+                page.update()
+
+            bloco_vistoria = ft.Column(spacing=8, controls=[
+                f_avarias, f_obs,
+                ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[
+                    vistoria_msg,
+                    ft.OutlinedButton("Salvar vistoria", icon=ft.Icons.FACT_CHECK,
+                                      on_click=salvar_vistoria, disabled=finalizada),
+                ]),
             ])
 
             # ----- Financeiro (Valores + Pagamento) -----
@@ -1263,7 +1321,9 @@ def main(page: ft.Page):
                 ctx = {
                     "id_ordem": id_ordem, "cli_nome": cli_nome, "placa": placa,
                     "data": fmt_dt(entrada),
-                    "itens": [(nome_serv, preco) for (_i, nome_serv, preco) in itens],
+                    "itens": [(nome_serv, exec_nome, preco)
+                              for (_i, nome_serv, preco, exec_nome) in itens],
+                    "avarias": avarias_atual,
                     "total": total_f, "desconto": desconto, "acrescimo": acrescimo,
                     "valor_final": valor_final,
                     "forma": dict(FORMAS_PAGAMENTO).get(forma, forma or "—"),
@@ -1351,6 +1411,9 @@ def main(page: ft.Page):
                     ft.Divider(),
                     ft.Text("Status do atendimento", weight=ft.FontWeight.BOLD),
                     linha_status,
+                    ft.Divider(),
+                    ft.Text("Vistoria de entrada / Observações", weight=ft.FontWeight.BOLD),
+                    bloco_vistoria,
                     ft.Divider(),
                     ft.Text("Valores", weight=ft.FontWeight.BOLD),
                     bloco_valores,
@@ -1714,6 +1777,9 @@ def main(page: ft.Page):
                     ft.DataCell(ft.Text(cor or "—")),
                     ft.DataCell(badge),
                     ft.DataCell(ft.Row(spacing=0, controls=[
+                        ft.IconButton(ft.Icons.HISTORY, icon_color=ft.Colors.GREY_600,
+                                      tooltip="Histórico de serviços",
+                                      on_click=lambda e, vv=v: ver_historico(vv)),
                         ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
                                       on_click=lambda e, vv=v: form_veiculo(vv)),
                         acao,
@@ -1755,6 +1821,59 @@ def main(page: ft.Page):
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Desativar", on_click=sim,
                                     style=ft.ButtonStyle(bgcolor=ft.Colors.RED_500)),
+                ],
+            ))
+
+        def ver_historico(veiculo):
+            (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor, ativo) = veiculo
+            comandas = mod_os.buscar_comandas(id_veiculo=idv)
+            veiculo_desc = " ".join(p for p in [marca, modelo] if p) or "—"
+
+            if not comandas:
+                lista = ft.Container(
+                    content=ft.Text("Nenhuma comanda registrada para este veículo ainda.",
+                                    color=ft.Colors.GREY_500))
+            else:
+                linhas_hist = []
+                for c in comandas:
+                    (ido, _cli_nome, _placa, status, total, forma, entrada) = c
+                    linhas_hist.append(ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(f"#{ido}", weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(fmt_dt(entrada))),
+                        ft.DataCell(badge_status(status)),
+                        ft.DataCell(ft.Text(brl(total))),
+                        ft.DataCell(ft.Text(dict(FORMAS_PAGAMENTO).get(forma, forma or "—"))),
+                    ]))
+                tabela_hist = ft.DataTable(
+                    heading_row_color=ft.Colors.GREY_50,
+                    columns=[
+                        ft.DataColumn(ft.Text("Comanda")),
+                        ft.DataColumn(ft.Text("Entrada")),
+                        ft.DataColumn(ft.Text("Status")),
+                        ft.DataColumn(ft.Text("Total")),
+                        ft.DataColumn(ft.Text("Pagamento")),
+                    ],
+                    rows=linhas_hist,
+                )
+                lista = ft.Container(
+                    height=320,
+                    content=ft.Column([tabela_hist], scroll=ft.ScrollMode.AUTO))
+
+            abrir_dialog(ft.AlertDialog(
+                modal=True,
+                title_padding=0,
+                title=cabecalho_dialog(f"Histórico — {placa}", ft.Icons.HISTORY),
+                content=ft.Container(width=560, content=ft.Column(tight=True, spacing=12, controls=[
+                    ft.Text(f"{cli_nome} — {veiculo_desc}", size=13, color=ft.Colors.GREY_700),
+                    ft.Text(
+                        f"{len(comandas)} visita" + ("s" if len(comandas) != 1 else "")
+                        + " na lavação",
+                        size=14, weight=ft.FontWeight.BOLD, color=COR_PRIMARIA),
+                    ft.Container(content=lista, height=320 if comandas else None,
+                                 padding=ft.Padding.only(top=4)),
+                ])),
+                actions=[
+                    ft.TextButton("Fechar", on_click=lambda e: fechar_dialog()),
                 ],
             ))
 
