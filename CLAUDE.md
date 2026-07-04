@@ -93,6 +93,14 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   `ordem_servico_item`, `plano_servico`.
 - **`ordem_servico_item.preco_aplicado`** congela o preço cobrado na comanda
   (histórico imune a reajustes futuros).
+- **Quem lavou por serviço:** `ordem_servico_item.id_funcionario` grava o executor
+  de cada item (não só o responsável da comanda). Escolhido no dropdown "Quem lavou"
+  ao adicionar o serviço; aparece por item na tela e como coluna **Lavador** no recibo.
+- **Vistoria de entrada:** `ordem_servico.avarias` (danos observados na chegada — protege
+  contra reclamação de dano pré-existente) e `ordem_servico.observacoes` (anotações gerais).
+  Colunas TEXT via `ALTER TABLE ... IF NOT EXISTS`; salvas por `salvar_observacoes()`
+  (atribuição direta, não COALESCE — o form envia os dois juntos e '' limpa). As avarias
+  saem no recibo PDF como comprovante.
 - **`funcionario.senha_hash`**: nunca senha em texto puro.
 - **Caixa e Fidelidade** com tabela de movimento separada (entradas/saídas,
   acúmulo/resgate), preservando histórico em vez de só um saldo.
@@ -140,6 +148,11 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - **Financeiro da comanda + recibo:** a tela de Comandas tem formulário de pagamento
   (desconto, acréscimo/juros, forma, parcelas, valor pago, datas de pagamento/vencimento)
   via `salvar_financeiro()`, e gera recibo em PDF (`gerar_recibo_pdf()` com reportlab),
-  salvo em `recibos/` (pasta ignorada pelo git).
+  salvo em `recibos/` (pasta ignorada pelo git). O recibo lista **Serviço · Lavador · Valor**
+  e traz seção **Vistoria de entrada** (avarias) quando preenchida.
+- **Quem lavou + vistoria (na comanda):** dropdown "Quem lavou" ao adicionar serviço
+  (grava `ordem_servico_item.id_funcionario`; item mostra "Lavou: …" ou "Sem responsável"),
+  e seção "Vistoria de entrada / Observações" com `avarias`/`observacoes` via
+  `salvar_observacoes()`. Ver [Decisões de modelagem].
 - **Próximos passos possíveis:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
   executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.
