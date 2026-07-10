@@ -148,11 +148,15 @@ CREATE TABLE IF NOT EXISTS produto (
     quantidade       NUMERIC(12,3) NOT NULL DEFAULT 0,
     estoque_minimo   NUMERIC(12,3) DEFAULT 0,
     custo_unitario   NUMERIC(10,2) DEFAULT 0 CHECK (custo_unitario >= 0),
+    preco_venda      NUMERIC(10,2) DEFAULT 0 CHECK (preco_venda >= 0),  -- preço cobrado do cliente (venda de balcão)
     id_fornecedor    INTEGER REFERENCES fornecedor(id_fornecedor),
     ativo            BOOLEAN   DEFAULT TRUE,
     criado_em        TIMESTAMP DEFAULT NOW(),
     atualizado_em    TIMESTAMP DEFAULT NOW()
 );
+
+-- Upgrade de bancos já existentes: preço de venda do produto (venda de balcão).
+ALTER TABLE produto ADD COLUMN IF NOT EXISTS preco_venda NUMERIC(10,2) DEFAULT 0 CHECK (preco_venda >= 0);
 
 CREATE TABLE IF NOT EXISTS movimentacao_estoque (
     id_movimentacao  SERIAL PRIMARY KEY,
@@ -242,18 +246,40 @@ ALTER TABLE ordem_servico ADD COLUMN IF NOT EXISTS observacoes     TEXT;
 CREATE INDEX IF NOT EXISTS idx_ordem_status  ON ordem_servico(status);
 CREATE INDEX IF NOT EXISTS idx_ordem_cliente ON ordem_servico(id_cliente);
 
--- Itens (serviços) de cada comanda, com o preço aplicado no momento
+-- Itens de cada comanda, com o preço aplicado no momento.
+-- Cada item é OU um serviço OU um produto de balcão (toalha, shampoo...), nunca os dois.
 CREATE TABLE IF NOT EXISTS ordem_servico_item (
     id_item         SERIAL PRIMARY KEY,
     id_ordem        INTEGER NOT NULL REFERENCES ordem_servico(id_ordem) ON DELETE CASCADE,
-    id_servico      INTEGER NOT NULL REFERENCES servico(id_servico),
-    id_funcionario  INTEGER REFERENCES funcionario(id_funcionario),  -- quem executou
-    preco_aplicado  NUMERIC(10,2) NOT NULL CHECK (preco_aplicado >= 0)
+    id_servico      INTEGER REFERENCES servico(id_servico),
+    id_produto      INTEGER REFERENCES produto(id_produto),           -- venda de produto na comanda
+    id_funcionario  INTEGER REFERENCES funcionario(id_funcionario),   -- quem executou (serviço)
+    quantidade      NUMERIC(12,3) NOT NULL DEFAULT 1 CHECK (quantidade > 0),
+    preco_aplicado  NUMERIC(10,2) NOT NULL CHECK (preco_aplicado >= 0),  -- preço UNITÁRIO congelado
+    CONSTRAINT ordem_servico_item_tipo_check CHECK (
+        (id_servico IS NOT NULL AND id_produto IS NULL)
+     OR (id_servico IS NULL AND id_produto IS NOT NULL)
+    )
 );
 
-CREATE INDEX IF NOT EXISTS idx_ordem_item_ordem ON ordem_servico_item(id_ordem);
+-- Upgrade de bancos já existentes: permite itens de PRODUTO na comanda.
+ALTER TABLE ordem_servico_item ALTER COLUMN id_servico DROP NOT NULL;
+ALTER TABLE ordem_servico_item ADD COLUMN IF NOT EXISTS id_produto INTEGER REFERENCES produto(id_produto);
+ALTER TABLE ordem_servico_item ADD COLUMN IF NOT EXISTS quantidade NUMERIC(12,3) NOT NULL DEFAULT 1;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ordem_servico_item_tipo_check') THEN
+        ALTER TABLE ordem_servico_item ADD CONSTRAINT ordem_servico_item_tipo_check CHECK (
+            (id_servico IS NOT NULL AND id_produto IS NULL)
+         OR (id_servico IS NULL AND id_produto IS NOT NULL));
+    END IF;
+END $$;
 
-COMMENT ON COLUMN ordem_servico_item.preco_aplicado IS 'Preço cobrado no momento da comanda (histórico imune a reajustes futuros)';
+CREATE INDEX IF NOT EXISTS idx_ordem_item_ordem   ON ordem_servico_item(id_ordem);
+CREATE INDEX IF NOT EXISTS idx_ordem_item_produto ON ordem_servico_item(id_produto);
+
+COMMENT ON COLUMN ordem_servico_item.preco_aplicado IS 'Preço UNITÁRIO cobrado no momento da comanda (histórico imune a reajustes futuros)';
+COMMENT ON COLUMN ordem_servico_item.quantidade IS 'Quantidade do item (serviço geralmente 1; produto pode ser N unidades)';
 
 
 -- ================================================================
