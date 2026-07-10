@@ -45,9 +45,10 @@ DB_config = {
     'user': os.environ.get('DB_USER', 'postgres'),
     'password': os.environ.get('DB_PASSWORD', ''),
     'client_encoding': 'utf8',
-    # Pendência conhecida (Windows): se o Postgres devolver mensagens de erro em
-    # português (Win-1252), o psycopg2 pode quebrar com UnicodeDecodeError. Se isso
-    # acontecer, adicione aqui:  'options': '-c lc_messages=C'
+    # Força as mensagens de erro do Postgres em inglês (locale C). No Windows, sem
+    # isso o psycopg2 pode quebrar com UnicodeDecodeError ao ler um erro em português
+    # (Win-1252). '-c lc_messages=C' é passado ao servidor via libpq no connect.
+    'options': '-c lc_messages=C',
 }
 
 

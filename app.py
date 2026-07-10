@@ -56,6 +56,7 @@ import fornecedores as mod_forn
 import planos_assinaturas as mod_planos
 import caixa as mod_caixa
 import dashboard as mod_dash
+from conexao import conectar   # usado no login para distinguir "banco fora" de "senha errada"
 
 # ================================================================
 # Paleta / identidade visual — cores da marca Truck Center Lavação
@@ -115,6 +116,25 @@ def qtd_fmt(v):
         return f"{float(v):g}".replace(".", ",")
     except (TypeError, ValueError):
         return "—"
+
+
+def dd_key(dd):
+    """Retorna a KEY da opção selecionada de um ft.Dropdown.
+
+    Existe porque o Flet 0.85 às vezes devolve em `dd.value` o TEXTO exibido
+    (ex.: o nome do fornecedor) em vez da `key` da opção (ex.: o id) — o que
+    quebrava `int(dd.value)` e comparações como `dd.value == "entrada"`.
+    Casamos o value contra a key E o text de cada opção e sempre devolvemos a
+    key. É seguro: se o value já for a key, casa direto e devolve a mesma coisa.
+    Retorna None quando nada está selecionado.
+    """
+    v = dd.value
+    if v is None or v == "":
+        return None
+    for op in (dd.options or []):
+        if v == op.key or v == op.text:
+            return op.key
+    return v  # fallback: devolve o que veio, sem mascarar
 
 
 def gerar_recibo_pdf(caminho, ctx):
@@ -277,6 +297,52 @@ def main(page: ft.Page):
             actions=[ft.TextButton("OK", on_click=lambda e: fechar_dialog())],
         ))
 
+    # ------------------------------------------------------------
+    # Feedback rápido (toast/SnackBar) — dá ao operador o retorno visível de que
+    # a ação deu certo (verde) ou falhou (vermelho). É o que faltava: antes, salvar
+    # era silencioso e o usuário não sabia se funcionou.
+    #
+    # No Flet 0.85 o SnackBar é um DialogControl, então é exibido pelo mesmo
+    # page.show_dialog() dos diálogos (via abrir_dialog). ⚠️ Por isso só chamamos
+    # toast quando NENHUM diálogo modal está aberto (senão o pop_dialog fecharia o
+    # toast em vez do diálogo). Regra prática: use após fechar_dialog() ou em ações
+    # de lista; dentro de um detalhe aberto, o refrescar() já é o retorno visual.
+    # ------------------------------------------------------------
+    def toast(mensagem, cor, icone):
+        abrir_dialog(ft.SnackBar(
+            content=ft.Row(tight=True, spacing=10, controls=[
+                ft.Icon(icone, color=ft.Colors.WHITE, size=20),
+                ft.Text(mensagem, color=ft.Colors.WHITE, size=15,
+                        weight=ft.FontWeight.W_500),
+            ]),
+            bgcolor=cor,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            duration=ft.Duration(milliseconds=2600),
+            show_close_icon=True,
+            close_icon_color=ft.Colors.WHITE,
+        ))
+
+    def sucesso(mensagem):
+        """Aviso verde de operação concluída."""
+        toast(mensagem, ft.Colors.GREEN_700, ft.Icons.CHECK_CIRCLE)
+
+    def falha(mensagem):
+        """Aviso vermelho de falha esperada (ex.: banco fora, ação não concluída)."""
+        toast(mensagem, ft.Colors.RED_600, ft.Icons.ERROR_OUTLINE)
+
+    def feedback_acao(resultado, msg_ok, atualizar_cb=None):
+        """Reação padrão a uma ação inline de escrita no banco: atualiza a lista e
+        mostra sucesso/falha conforme o retorno do backend (id/True = ok;
+        None/False = falhou). Uso nos on_click de reativar/desativar da tabela:
+            lambda e, i=id: feedback_acao(mod.reativar(i), "Reativado.", atualizar)
+        (o backend já é chamado dentro do lambda; aqui só reagimos ao resultado)."""
+        if atualizar_cb:
+            atualizar_cb()
+        if resultado is None or resultado is False:
+            falha("Não foi possível concluir. Verifique a conexão com o banco.")
+        else:
+            sucesso(msg_ok)
+
     # ============================================================
     # TELA DE LOGIN
     # ============================================================
@@ -303,7 +369,16 @@ def main(page: ft.Page):
                 sessao["id"], sessao["nome"], sessao["funcao"] = resultado
                 montar_app()
             else:
-                erro.value = "Login ou senha inválidos."
+                # autenticar() devolve None tanto para senha errada quanto para
+                # banco fora. Testamos a conexão para não mandar o operador ficar
+                # redigitando a senha certa quando o problema é o PostgreSQL parado.
+                conx = conectar()
+                if conx is None:
+                    erro.value = ("Sem conexão com o banco de dados. "
+                                  "Verifique se o PostgreSQL está ligado.")
+                else:
+                    conx.close()
+                    erro.value = "Login ou senha inválidos."
                 page.update()
 
         def entrar_demo(e=None):
@@ -613,7 +688,7 @@ def main(page: ft.Page):
                 else:
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
-                                         on_click=lambda e, i=idc: (mod_cli.reativar_cliente(i), atualizar()))
+                                         on_click=lambda e, i=idc: feedback_acao(mod_cli.reativar_cliente(i), "Cliente reativado.", atualizar))
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(str(idc))),
                     ft.DataCell(ft.Text(nome or "")),
@@ -655,9 +730,13 @@ def main(page: ft.Page):
             # Soft delete: pede confirmação e chama desativar_cliente (não apaga o
             # registro; só marca ativo=FALSE, preservando o histórico).
             def sim(e):
-                mod_cli.desativar_cliente(idc)
+                ok = mod_cli.desativar_cliente(idc)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Cliente desativado.")
+                else:
+                    falha("Não foi possível desativar. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar cliente"),
@@ -707,6 +786,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Cliente atualizado." if editando else "Cliente cadastrado.")
                 else:
                     aviso("Erro", "Não foi possível salvar. Verifique a conexão com o banco.")
 
@@ -777,7 +857,7 @@ def main(page: ft.Page):
                 else:
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
-                                         on_click=lambda e, i=ids: (mod_serv.reativar_servico(i), atualizar()))
+                                         on_click=lambda e, i=ids: feedback_acao(mod_serv.reativar_servico(i), "Serviço reativado.", atualizar))
                 cor_precos = ft.Colors.GREEN_700 if n_precos else ft.Colors.RED_500
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(str(ids))),
@@ -818,9 +898,13 @@ def main(page: ft.Page):
 
         def confirmar_desativar(ids):
             def sim(e):
-                mod_serv.desativar_servico(ids)
+                ok = mod_serv.desativar_servico(ids)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Serviço desativado.")
+                else:
+                    falha("Não foi possível desativar. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar serviço"),
@@ -861,6 +945,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Serviço atualizado." if editando else "Serviço cadastrado.")
                 else:
                     aviso("Erro", "Não foi possível salvar o serviço.")
 
@@ -924,6 +1009,7 @@ def main(page: ft.Page):
                         mod_serv.definir_preco(id_servico, cat_id, val)  # upsert
                 fechar_dialog()
                 atualizar()
+                sucesso("Preços atualizados.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
@@ -991,7 +1077,6 @@ def main(page: ft.Page):
         def montar_linhas():
             comandas = mod_os.buscar_comandas(somente_abertas=filtro_abertas.value)
             if not comandas:
-                # Mensagem contextual: distingue "não há nenhuma" de "filtro escondendo".
                 if filtro_abertas.value and mod_os.buscar_comandas():
                     msg = ("Nenhuma comanda aberta no momento.\n"
                            "Desmarque \"Somente abertas\" para ver o histórico.")
@@ -1055,13 +1140,14 @@ def main(page: ft.Page):
             def criar(e):
                 # A comanda é aberta pelo VEÍCULO; o cliente é deduzido dele
                 # (vinfo[1] = id_cliente), pois todo veículo pertence a um cliente.
-                if not dd_vei.value:
+                k_vei = dd_key(dd_vei)
+                if not k_vei:
                     erro.value = "Selecione o veículo."; page.update(); return
-                vinfo = mod_veic.buscar_veiculo_por_id(int(dd_vei.value))
+                vinfo = mod_veic.buscar_veiculo_por_id(int(k_vei))
                 if not vinfo:
                     erro.value = "Veículo não encontrado."; page.update(); return
                 id_cliente = vinfo[1]
-                ido = mod_os.abrir_comanda(id_cliente, int(dd_vei.value),
+                ido = mod_os.abrir_comanda(id_cliente, int(k_vei),
                                            id_funcionario=sessao["id"] or None)
                 fechar_dialog()
                 if ido:
@@ -1159,11 +1245,13 @@ def main(page: ft.Page):
                 # adicionar_servico devolve None quando o serviço não tem preço para o
                 # PORTE deste veículo (a matriz preço×porte não cobre essa combinação).
                 # Nesse caso avisamos em vez de adicionar um item sem valor.
-                if not dd_serv.value:
+                k_serv = dd_key(dd_serv)
+                if not k_serv:
                     return
                 # Funcionário escolhido no dropdown (cai no logado se nada for selecionado).
-                id_func = int(dd_func.value) if dd_func.value else (sessao["id"] or None)
-                r = mod_os.adicionar_servico(id_ordem, int(dd_serv.value),
+                k_func = dd_key(dd_func)
+                id_func = int(k_func) if k_func else (sessao["id"] or None)
+                r = mod_os.adicionar_servico(id_ordem, int(k_serv),
                                              id_funcionario=id_func)
                 if r is None:
                     aviso("Sem preço definido",
@@ -1289,13 +1377,20 @@ def main(page: ft.Page):
                             except ValueError:
                                 erro.value = f"{rot}: data inválida (AAAA-MM-DD)."
                                 page.update(); return
-                    mod_os.salvar_financeiro(
+                    ok = mod_os.salvar_financeiro(
                         id_ordem, desconto=num(f_desc), acrescimo=num(f_acre),
-                        forma_pagamento=dd_forma.value, parcelas=int(parc_txt),
+                        forma_pagamento=dd_key(dd_forma), parcelas=int(parc_txt),
                         valor_pago=num(f_pago),
                         data_pagamento=(f_dpag.value or '').strip() or None,
                         data_vencimento=(f_venc.value or '').strip() or None)
-                    refrescar()
+                    # Sucesso: o refrescar() reabre a comanda com o status de pagamento
+                    # já atualizado (Pago/Parcial/Pendente) — esse é o retorno visível.
+                    # Falha: aviso modal por cima do form, para o operador poder repetir.
+                    if ok:
+                        refrescar()
+                    else:
+                        aviso("Erro", "Não foi possível salvar o pagamento. "
+                                      "Verifique a conexão com o banco.")
 
                 abrir_dialog(ft.AlertDialog(
                     modal=True, title_padding=0,
@@ -1481,7 +1576,7 @@ def main(page: ft.Page):
                 else:
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
-                                         on_click=lambda e, i=idp: (mod_estoque.reativar_produto(i), atualizar()))
+                                         on_click=lambda e, i=idp: feedback_acao(mod_estoque.reativar_produto(i), "Produto reativado.", atualizar))
                 cel_qtd = ft.Row(spacing=6, controls=[
                     ft.Text(qtd_fmt(qtd),
                             color=ft.Colors.RED_600 if critico else None,
@@ -1535,9 +1630,13 @@ def main(page: ft.Page):
 
         def confirmar_desativar(idp):
             def sim(e):
-                mod_estoque.desativar_produto(idp)
+                ok = mod_estoque.desativar_produto(idp)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Produto desativado.")
+                else:
+                    falha("Não foi possível desativar. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar produto"),
@@ -1591,7 +1690,8 @@ def main(page: ft.Page):
                 if not (ok1 and ok2):
                     erro_form.value = "Mínimo e custo devem ser números."
                     page.update(); return
-                id_forn = int(dd_forn.value) if dd_forn.value else None
+                k_forn = dd_key(dd_forn)
+                id_forn = int(k_forn) if k_forn else None
                 if editando:
                     ok = mod_estoque.editar_produto(
                         produto[0], nome=f_nome.value.strip(),
@@ -1610,6 +1710,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Produto atualizado." if editando else "Produto cadastrado.")
                 else:
                     aviso("Erro", "Não foi possível salvar o produto.")
 
@@ -1654,20 +1755,22 @@ def main(page: ft.Page):
                     erro_form.value = "Quantidade deve ser maior que zero."
                     page.update(); return
                 obs = (f_obs.value or "").strip() or None
+                tipo_mov = dd_key(dd_tipo)
                 # Entrada soma ao saldo; saída subtrai. registrar_saida devolve None
                 # quando não há saldo suficiente (o backend recusa deixar negativo).
-                if dd_tipo.value == "entrada":
+                if tipo_mov == "entrada":
                     res = mod_estoque.registrar_entrada(id_produto, qtd, obs)
                 else:
                     res = mod_estoque.registrar_saida(id_produto, qtd, obs)
                 if res is None:
-                    if dd_tipo.value == "saida":
+                    if tipo_mov == "saida":
                         erro_form.value = "Saldo insuficiente para essa saída."
                     else:
                         erro_form.value = "Não foi possível registrar a movimentação."
                     page.update(); return
                 fechar_dialog()
                 atualizar()
+                sucesso("Entrada registrada." if tipo_mov == "entrada" else "Saída registrada.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
@@ -1766,7 +1869,7 @@ def main(page: ft.Page):
                 else:
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
-                                         on_click=lambda e, i=idv: (mod_veic.reativar_veiculo(i), atualizar()))
+                                         on_click=lambda e, i=idv: feedback_acao(mod_veic.reativar_veiculo(i), "Veículo reativado.", atualizar))
                 veiculo_desc = " ".join(p for p in [marca, modelo] if p) or "—"
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(placa or "")),
@@ -1810,9 +1913,13 @@ def main(page: ft.Page):
 
         def confirmar_desativar(idv):
             def sim(e):
-                mod_veic.desativar_veiculo(idv)
+                ok = mod_veic.desativar_veiculo(idv)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Veículo desativado.")
+                else:
+                    falha("Não foi possível desativar. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar veículo"),
@@ -1901,10 +2008,12 @@ def main(page: ft.Page):
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
-                if not dd_cliente.value:
+                k_cli = dd_key(dd_cliente)
+                k_cat = dd_key(dd_categoria)
+                if not k_cli:
                     erro_form.value = "Selecione o cliente."
                     page.update(); return
-                if not dd_categoria.value:
+                if not k_cat:
                     erro_form.value = "Selecione o porte."
                     page.update(); return
                 if not (f_placa.value or "").strip():
@@ -1916,8 +2025,8 @@ def main(page: ft.Page):
                     page.update(); return
                 ano_val = int(ano_txt) if ano_txt else None
                 vals = dict(
-                    id_cliente=int(dd_cliente.value),
-                    id_categoria=int(dd_categoria.value),
+                    id_cliente=int(k_cli),
+                    id_categoria=int(k_cat),
                     placa=f_placa.value.strip().upper(),
                     marca=(f_marca.value or "").strip() or None,
                     modelo=(f_modelo.value or "").strip() or None,
@@ -1931,6 +2040,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Veículo atualizado." if editando else "Veículo cadastrado.")
                 else:
                     aviso("Erro", "Não foi possível salvar. Verifique a conexão com o banco.")
 
@@ -2071,9 +2181,10 @@ def main(page: ft.Page):
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
-                if not dd_vei.value:
+                k_vei = dd_key(dd_vei)
+                if not k_vei:
                     erro.value = "Selecione o veículo."; page.update(); return
-                vinfo = mod_veic.buscar_veiculo_por_id(int(dd_vei.value))
+                vinfo = mod_veic.buscar_veiculo_por_id(int(k_vei))
                 id_cliente_sel = vinfo[1] if vinfo else None
                 if not id_cliente_sel:
                     erro.value = "Veículo inválido."; page.update(); return
@@ -2104,10 +2215,10 @@ def main(page: ft.Page):
                         page.update(); return
 
                 novo = mod_ag.criar_agendamento(
-                    id_cliente=id_cliente_sel, id_veiculo=int(dd_vei.value),
+                    id_cliente=id_cliente_sel, id_veiculo=int(k_vei),
                     data_hora=quando.strftime("%Y-%m-%d %H:%M:%S"),
                     servicos=escolhidos, duracao_estimada_min=dur_val, box=box,
-                    origem=dd_origem.value or "manual",
+                    origem=dd_key(dd_origem) or "manual",
                     observacoes=(f_obs.value or "").strip() or None)
                 fechar_dialog()
                 if novo:
@@ -2327,7 +2438,7 @@ def main(page: ft.Page):
 
         def montar_linhas():
             termo = (campo_busca.value or "").strip() or None
-            funcao = (dd_filtro_funcao.value or "") or None
+            funcao = dd_key(dd_filtro_funcao) or None
             funcs = mod_func.buscar_funcionarios(
                 termo=termo, funcao=funcao, apenas_ativos=not mostrar_inativos.value)
             if not funcs:
@@ -2351,7 +2462,7 @@ def main(page: ft.Page):
                 else:
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
-                                         on_click=lambda e, i=idf: (mod_func.reativar_funcionario(i), atualizar()))
+                                         on_click=lambda e, i=idf: feedback_acao(mod_func.reativar_funcionario(i), "Funcionário reativado.", atualizar))
                 comissao_txt = (f"{float(comissao):g}%" if comissao is not None else "—")
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(str(idf))),
@@ -2395,9 +2506,13 @@ def main(page: ft.Page):
 
         def confirmar_desativar(idf):
             def sim(e):
-                mod_func.desativar_funcionario(idf)
+                ok = mod_func.desativar_funcionario(idf)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Funcionário desativado.")
+                else:
+                    falha("Não foi possível desativar. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar funcionário"),
@@ -2448,20 +2563,22 @@ def main(page: ft.Page):
                         erro_form.value = "Data de admissão inválida (use AAAA-MM-DD)."
                         page.update(); return
                 login = (f_login.value or "").strip() or None
+                funcao_sel = dd_key(dd_funcao)
                 if editando:
                     ok = mod_func.editar_funcionario(
-                        func[0], nome=f_nome.value.strip(), funcao=dd_funcao.value,
+                        func[0], nome=f_nome.value.strip(), funcao=funcao_sel,
                         login=login, comissao_percentual=comissao_val,
                         data_admissao=adm_txt or None)
                 else:
                     ok = mod_func.inserir_funcionario(
-                        nome=f_nome.value.strip(), funcao=dd_funcao.value, login=login,
+                        nome=f_nome.value.strip(), funcao=funcao_sel, login=login,
                         senha=(f_senha.value or "") or None,
                         comissao_percentual=comissao_val if comissao_val is not None else 0,
                         data_admissao=adm_txt or None) is not None
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Funcionário atualizado." if editando else "Funcionário cadastrado.")
                 else:
                     aviso("Erro", "Não foi possível salvar. O login pode já estar em uso.")
 
@@ -2569,7 +2686,7 @@ def main(page: ft.Page):
                 else:
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
-                                         on_click=lambda e, i=idf: (mod_forn.reativar_fornecedor(i), atualizar()))
+                                         on_click=lambda e, i=idf: feedback_acao(mod_forn.reativar_fornecedor(i), "Fornecedor reativado.", atualizar))
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(str(idf))),
                     ft.DataCell(ft.Text(nome or "")),
@@ -2611,9 +2728,13 @@ def main(page: ft.Page):
 
         def confirmar_desativar(idf):
             def sim(e):
-                mod_forn.desativar_fornecedor(idf)
+                ok = mod_forn.desativar_fornecedor(idf)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Fornecedor desativado.")
+                else:
+                    falha("Não foi possível desativar. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar fornecedor"),
@@ -2656,6 +2777,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Fornecedor atualizado." if editando else "Fornecedor cadastrado.")
                 else:
                     aviso("Erro", "Não foi possível salvar o fornecedor.")
 
@@ -2788,11 +2910,11 @@ def main(page: ft.Page):
                     if ativo:
                         acao = ft.IconButton(ft.Icons.BLOCK, icon_color=ft.Colors.RED_400,
                                              tooltip="Desativar",
-                                             on_click=lambda e, i=idp: (mod_planos.desativar_plano(i), atualizar()))
+                                             on_click=lambda e, i=idp: feedback_acao(mod_planos.desativar_plano(i), "Plano desativado.", atualizar))
                     else:
                         acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                              tooltip="Reativar",
-                                             on_click=lambda e, i=idp: (mod_planos.reativar_plano(i), atualizar()))
+                                             on_click=lambda e, i=idp: feedback_acao(mod_planos.reativar_plano(i), "Plano reativado.", atualizar))
                     linhas.append(ft.DataRow(cells=[
                         ft.DataCell(ft.Text(str(idp))),
                         ft.DataCell(ft.Text(nome or "")),
@@ -2845,6 +2967,7 @@ def main(page: ft.Page):
                     fechar_dialog()
                     if ok:
                         atualizar()
+                        sucesso("Plano atualizado." if editando else "Plano criado.")
                     else:
                         aviso("Erro", "Não foi possível salvar o plano.")
 
@@ -2943,7 +3066,7 @@ def main(page: ft.Page):
                     if ativo:
                         botoes.append(ft.IconButton(
                             ft.Icons.CANCEL, icon_color=ft.Colors.RED_400, tooltip="Cancelar",
-                            on_click=lambda e, i=ida: (mod_planos.cancelar_assinatura(i), atualizar())))
+                            on_click=lambda e, i=ida: feedback_acao(mod_planos.cancelar_assinatura(i), "Assinatura cancelada.", atualizar)))
                     linhas.append(ft.DataRow(cells=[
                         ft.DataCell(ft.Text(str(ida))),
                         ft.DataCell(ft.Text(cli or "")),
@@ -3013,15 +3136,18 @@ def main(page: ft.Page):
                 def on_plano(e):
                     # Ao escolher o plano, mostra o resumo (valor + serviços inclusos)
                     # para o cliente ficar ciente do que está contratando antes de assinar.
-                    resumo.content = (resumo_plano_widget(int(dd_plano.value))
-                                      if dd_plano.value else None)
+                    k_plano = dd_key(dd_plano)
+                    resumo.content = (resumo_plano_widget(int(k_plano))
+                                      if k_plano else None)
                     resumo.update()
                 dd_plano.on_change = on_plano
 
                 def salvar(e):
-                    if not dd_cli.value:
+                    k_cli = dd_key(dd_cli)
+                    k_plano = dd_key(dd_plano)
+                    if not k_cli:
                         erro.value = "Selecione o cliente."; page.update(); return
-                    if not dd_plano.value:
+                    if not k_plano:
                         erro.value = "Selecione o plano."; page.update(); return
                     for campo, rotulo in ((f_inicio, "Início"), (f_venc, "Vencimento")):
                         txt = (campo.value or "").strip()
@@ -3032,12 +3158,13 @@ def main(page: ft.Page):
                                 erro.value = f"{rotulo}: data inválida (AAAA-MM-DD)."
                                 page.update(); return
                     novo = mod_planos.assinar(
-                        int(dd_cli.value), int(dd_plano.value),
+                        int(k_cli), int(k_plano),
                         data_inicio=(f_inicio.value or "").strip() or None,
                         data_vencimento=(f_venc.value or "").strip() or None)
                     fechar_dialog()
                     if novo:
                         atualizar()
+                        sucesso("Assinatura criada.")
                     else:
                         aviso("Erro", "Não foi possível criar a assinatura.")
 
@@ -3183,9 +3310,13 @@ def main(page: ft.Page):
 
         def confirmar_excluir(idd, desc):
             def sim(e):
-                mod_desp.excluir_despesa(idd)
+                ok = mod_desp.excluir_despesa(idd)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Despesa excluída.")
+                else:
+                    falha("Não foi possível excluir. Verifique a conexão com o banco.")
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Excluir despesa"),
@@ -3213,10 +3344,14 @@ def main(page: ft.Page):
                         datetime.strptime(dtxt, "%Y-%m-%d")
                     except ValueError:
                         erro.value = "Data inválida (AAAA-MM-DD)."; page.update(); return
-                mod_desp.marcar_como_paga(idd, data_pagamento=dtxt or None,
-                                          forma_pagamento=dd_forma.value or None)
+                ok = mod_desp.marcar_como_paga(idd, data_pagamento=dtxt or None,
+                                               forma_pagamento=dd_key(dd_forma) or None)
                 fechar_dialog()
                 atualizar()
+                if ok:
+                    sucesso("Despesa marcada como paga.")
+                else:
+                    falha("Não foi possível marcar como paga. Verifique a conexão.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
@@ -3269,7 +3404,8 @@ def main(page: ft.Page):
                         datetime.strptime(venc_txt, "%Y-%m-%d")
                     except ValueError:
                         erro.value = "Vencimento inválido (AAAA-MM-DD)."; page.update(); return
-                id_forn = int(dd_forn.value) if dd_forn.value else None
+                k_forn = dd_key(dd_forn)
+                id_forn = int(k_forn) if k_forn else None
                 cat = (f_cat.value or "").strip() or None
                 if editando:
                     ok = mod_desp.editar_despesa(
@@ -3282,6 +3418,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if ok:
                     atualizar()
+                    sucesso("Despesa atualizada." if editando else "Despesa cadastrada.")
                 else:
                     aviso("Erro", "Não foi possível salvar a despesa.")
 
@@ -3349,6 +3486,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if cid:
                     render()
+                    sucesso("Caixa aberto.")
                 else:
                     aviso("Erro", "Não foi possível abrir o caixa (já há um aberto?).")
 
@@ -3383,6 +3521,7 @@ def main(page: ft.Page):
                 fechar_dialog()
                 if res:
                     render()
+                    sucesso("Entrada registrada." if entrada else "Saída registrada.")
                 else:
                     aviso("Erro", "Não foi possível registrar o movimento.")
 
@@ -3692,6 +3831,7 @@ def main(page: ft.Page):
                     page.update(); return
                 fechar_dialog()
                 atualizar()
+                sucesso(f"{pts} pontos acumulados." if acumular else f"{pts} pontos resgatados.")
 
             cor = ft.Colors.GREEN_600 if acumular else COR_PRIMARIA
             abrir_dialog(ft.AlertDialog(
