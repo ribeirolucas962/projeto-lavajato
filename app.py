@@ -2803,7 +2803,7 @@ def main(page: ft.Page):
                 linhas = [ft.DataRow(cells=[
                     ft.DataCell(ft.Text(nome or "")),
                     ft.DataCell(ft.Text(str(un or "—"))),
-                    ft.DataCell(ft.Text(str(qtd if qtd is not None else "—"))),
+                    ft.DataCell(ft.Text(qtd_fmt(qtd) if qtd is not None else "—")),
                     ft.DataCell(ft.Text(brl(custo) if custo is not None else "—")),
                 ]) for (_idp, nome, un, qtd, custo) in produtos]
                 corpo = ft.DataTable(

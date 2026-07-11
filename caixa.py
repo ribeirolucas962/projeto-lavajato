@@ -8,6 +8,8 @@ Controle do caixa diário: abertura (com fundo inicial), movimentações
 do saldo esperado x saldo real. Só pode haver UM caixa aberto por vez.
 """
 
+from decimal import Decimal
+
 from conexao import conectar
 
 
@@ -188,6 +190,11 @@ def fechar_caixa(saldo_real, id_funcionario=None, observacoes=None):
         print("Nenhum caixa aberto para fechar.")
         return None
     id_caixa = aberto[0]
+
+    # O saldo_real chega da interface como float; o saldo esperado vem do banco
+    # como Decimal. Converter aqui para Decimal (via str, sem ruído de binário)
+    # evita o 'float - Decimal' (TypeError) no cálculo da diferença mais abaixo.
+    saldo_real = Decimal(str(saldo_real))
 
     esperado = saldo_esperado(id_caixa)
 
