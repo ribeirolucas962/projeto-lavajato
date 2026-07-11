@@ -449,12 +449,12 @@ def main(page: ft.Page):
         return ft.Container(
             on_click=ir,
             border_radius=8,
-            padding=ft.Padding.symmetric(horizontal=14, vertical=11),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=14),
             bgcolor=ft.Colors.with_opacity(0.16, COR_ACENTO) if selecionado else None,
-            content=ft.Row(spacing=12, controls=[
-                ft.Icon(icone, size=20,
+            content=ft.Row(spacing=14, controls=[
+                ft.Icon(icone, size=28,
                         color=COR_ACENTO if selecionado else ft.Colors.BLUE_GREY_200),
-                ft.Text(nome, size=14,
+                ft.Text(nome, size=18,
                         weight=ft.FontWeight.W_600 if selecionado else ft.FontWeight.NORMAL,
                         color=COR_TEXTO_CLARO if selecionado else ft.Colors.BLUE_GREY_100),
             ]),
