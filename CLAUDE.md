@@ -154,5 +154,11 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   (grava `ordem_servico_item.id_funcionario`; item mostra "Lavou: …" ou "Sem responsável"),
   e seção "Vistoria de entrada / Observações" com `avarias`/`observacoes` via
   `salvar_observacoes()`. Ver [Decisões de modelagem].
+- **Correção (fechamento de caixa):** `caixa.fechar_caixa()` quebrava com `TypeError`
+  (`float − Decimal`) ao calcular a diferença — o caixa até fechava no banco (o `commit`
+  vinha antes), mas o erro fazia a função devolver `None` e o app mostrava "não foi possível
+  fechar". Corrigido convertendo o `saldo_real` para `Decimal` no início da função
+  (`Decimal(str(saldo_real))`). Coberto pelo teste E2E do backend.
+- **UI:** menu lateral com fonte/ícones maiores (ícones 28, texto 18) para melhor legibilidade.
 - **Próximos passos possíveis:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
   executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.
