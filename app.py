@@ -42,10 +42,13 @@ PADRÃO DE CADA TELA (pagina_*): todas seguem a MESMA receita, então entender u
 """
 
 import os
+import csv
 from datetime import datetime
 import flet as ft
 
 import funcionario as mod_func
+import validadores as val          # máscaras (CPF, telefone, data) e validação de CPF/CNPJ
+import whatsapp as wpp             # links wa.me com as mensagens prontas
 import cadastro_cliente as mod_cli
 import cadastro_veiculo as mod_veic
 import catalogo_servicos as mod_serv
@@ -342,6 +345,108 @@ def main(page: ft.Page):
             falha("Não foi possível concluir. Verifique a conexão com o banco.")
         else:
             sucesso(msg_ok)
+
+    # ------------------------------------------------------------
+    # WhatsApp — abre a conversa com o cliente e a mensagem já escrita
+    #
+    # Não é integração/API: é o link wa.me (ver whatsapp.py). O atendente revisa
+    # o texto e aperta enviar. Aqui a gente só escolhe o MODELO e abre o link.
+    # ------------------------------------------------------------
+    ICONES_WPP = {
+        "carro_pronto": (ft.Icons.CHECK_CIRCLE, ft.Colors.GREEN_600),
+        "aniversario": (ft.Icons.CAKE, ft.Colors.PINK_400),
+        "promocao": (ft.Icons.LOCAL_OFFER, ft.Colors.ORANGE_600),
+        "sentimos_falta": (ft.Icons.FAVORITE, ft.Colors.RED_300),
+        "orcamento_pronto": (ft.Icons.HOURGLASS_TOP, ft.Colors.BLUE_600),
+        "cobranca": (ft.Icons.PAYMENTS, ft.Colors.AMBER_800),
+    }
+
+    def menu_whatsapp(id_cliente, nome, telefone, sugerido=None):
+        """
+        Diálogo com as mensagens prontas. Clicou no modelo -> abre o WhatsApp.
+        'sugerido' destaca o modelo mais provável naquele contexto (ex.: na lista
+        de aniversariantes, "Feliz aniversário" vem primeiro).
+        """
+        if not wpp.normalizar_numero(telefone):
+            falha("Este cliente não tem um telefone válido cadastrado.")
+            return
+
+        # O veículo entra na mensagem ("seu Fiat Toro (ABC-1234) está pronto").
+        # Tupla: (id, id_cliente, id_categoria, categoria, placa, marca, modelo, ...)
+        veiculos = mod_veic.buscar_veiculos_por_cliente(id_cliente)
+
+        def descricao_veiculo(v):
+            partes = [p for p in (v[5], v[6]) if p]        # marca, modelo
+            carro = " ".join(partes) or "veículo"
+            return f"{carro} ({v[4]})"                     # + placa
+
+        # Sem veículo cadastrado, a mensagem cai no genérico "seu veículo".
+        opcoes_veic = [descricao_veiculo(v) for v in veiculos]
+        dd_veic = ft.Dropdown(
+            label="Veículo (usado na mensagem)", width=420,
+            options=[ft.dropdown.Option(key=d, text=d) for d in opcoes_veic],
+            value=opcoes_veic[0] if opcoes_veic else None,
+            visible=bool(opcoes_veic),
+        )
+
+        def enviar(modelo):
+            link = wpp.link_modelo(telefone, modelo, cliente=nome,
+                                   veiculo=dd_veic.value or "")
+            if not link:
+                falha("Telefone inválido para o WhatsApp.")
+                return
+            page.launch_url(link)      # abre o WhatsApp Web/app no navegador
+            fechar_dialog()
+            sucesso("WhatsApp aberto. Revise o texto e envie.")
+
+        modelos = wpp.modelos_disponiveis()
+        if sugerido:
+            modelos.sort(key=lambda m: m[0] != sugerido)   # o sugerido vai pro topo
+
+        botoes = []
+        for chave, titulo in modelos:
+            icone, cor = ICONES_WPP.get(chave, (ft.Icons.CHAT, ft.Colors.GREY_600))
+            destaque = (chave == sugerido)
+            botoes.append(ft.Container(
+                border_radius=8, padding=4,
+                bgcolor=ft.Colors.GREEN_50 if destaque else None,
+                content=ft.ListTile(
+                    leading=ft.Icon(icone, color=cor),
+                    title=ft.Text(titulo, weight=ft.FontWeight.W_600 if destaque
+                                  else ft.FontWeight.NORMAL),
+                    subtitle=ft.Text(
+                        wpp.montar_mensagem(chave, cliente=nome,
+                                            veiculo=dd_veic.value or "").split("\n")[0],
+                        size=11, color=ft.Colors.GREY_600),
+                    on_click=lambda e, c=chave: enviar(c),
+                ),
+            ))
+
+        abrir_dialog(ft.AlertDialog(
+            modal=True,
+            title_padding=0,
+            title=cabecalho_dialog(f"WhatsApp — {nome}", ft.Icons.CHAT),
+            content=ft.Container(width=460, content=ft.Column(
+                tight=True, spacing=6, scroll=ft.ScrollMode.AUTO, controls=[
+                    ft.Text(f"Enviando para {telefone}", size=12, color=ft.Colors.GREY_700),
+                    dd_veic,
+                    ft.Divider(height=8),
+                    ft.Text("Escolha a mensagem:", size=12, weight=ft.FontWeight.W_600),
+                    *botoes,
+                ])),
+            actions=[ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog())],
+        ))
+
+    def botao_whatsapp(id_cliente, nome, telefone, sugerido=None):
+        """Ícone verde do WhatsApp. Fica apagado se o cliente não tem telefone."""
+        valido = bool(wpp.normalizar_numero(telefone))
+        return ft.IconButton(
+            ft.Icons.CHAT,
+            icon_color=ft.Colors.GREEN_600 if valido else ft.Colors.GREY_400,
+            tooltip="Mandar WhatsApp" if valido else "Sem telefone cadastrado",
+            disabled=not valido,
+            on_click=lambda e: menu_whatsapp(id_cliente, nome, telefone, sugerido),
+        )
 
     # ============================================================
     # TELA DE LOGIN
@@ -655,14 +760,70 @@ def main(page: ft.Page):
             prefix_icon=ft.Icons.SEARCH, height=44,
         )
         mostrar_inativos = ft.Checkbox(label="Incluir inativos", value=False)
+
+        # LISTAS DE CAMPANHA: além de "todos", a tela sabe recortar quem interessa
+        # naquele momento (aniversariantes do mês, quem sumiu, quem mais gasta).
+        # Cada modo indica também qual mensagem de WhatsApp faz sentido sugerir.
+        dd_filtro = ft.Dropdown(
+            label="Lista", width=230,
+            value="todos",
+            options=[
+                ft.dropdown.Option(key="todos", text="Todos os clientes"),
+                ft.dropdown.Option(key="aniversariantes", text="Aniversariantes do mês"),
+                ft.dropdown.Option(key="sumidos", text="Sumidos (60+ dias)"),
+                ft.dropdown.Option(key="top", text="Top 10 que mais gastam"),
+            ],
+        )
         # Coluna "viva": seu conteúdo é trocado por atualizar() sem reconstruir a tela.
         corpo_tabela = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
+        # Guarda o que está na tela agora — usado pelo botão de exportar CSV.
+        visiveis = {"clientes": [], "extra_titulo": None, "extra": {}}
 
-        def montar_linhas():
-            # Lê os clientes do banco conforme o filtro e devolve a DataTable pronta.
+        def dados_da_lista():
+            """
+            Devolve (clientes, titulo_da_coluna_extra, mapa_extra, modelo_wpp_sugerido).
+
+            A tabela é SEMPRE montada com a tupla completa do cliente (vinda de
+            buscar_clientes). Os modos de campanha só dizem QUAIS clientes entram,
+            em que ORDEM, e qual informação extra mostrar numa coluna a mais
+            (o dia do aniversário, os dias sem vir, o total gasto).
+            """
             termo = (campo_busca.value or "").strip() or None
             clientes = mod_cli.buscar_clientes(
                 termo=termo, apenas_ativos=not mostrar_inativos.value)
+            modo = dd_key(dd_filtro) or "todos"
+
+            if modo == "todos":
+                return clientes, None, {}, None
+
+            if modo == "aniversariantes":
+                # (id, nome, telefone, data_nascimento, dia)
+                dados = mod_cli.aniversariantes_mes()
+                extra = {a[0]: f"dia {a[4]:02d}" for a in dados}
+                titulo, sugerido = "Aniversário", "aniversario"
+            elif modo == "sumidos":
+                # (id, nome, telefone, ultima_visita, dias_sem_vir)
+                dados = mod_cli.clientes_inativos(60)
+                extra = {c[0]: (f"{c[4]} dias" if c[4] is not None else "nunca veio")
+                         for c in dados}
+                titulo, sugerido = "Sem vir há", "sentimos_falta"
+            else:  # top
+                # (id, nome, telefone, visitas, total_gasto)
+                dados = mod_cli.top_clientes(10)
+                extra = {t[0]: brl(t[4]) for t in dados}
+                titulo, sugerido = "Total gasto", "promocao"
+
+            # Mantém a ordem que o banco devolveu (por dia, por tempo sumido, por gasto)
+            # em vez da ordem alfabética do buscar_clientes.
+            ordem = {id_: pos for pos, id_ in enumerate(extra)}
+            clientes = [c for c in clientes if c[0] in extra]
+            clientes.sort(key=lambda c: ordem[c[0]])
+            return clientes, titulo, extra, sugerido
+
+        def montar_linhas():
+            clientes, extra_titulo, extra, sugerido = dados_da_lista()
+            visiveis.update(clientes=clientes, extra_titulo=extra_titulo, extra=extra)
+
             if not clientes:
                 return ft.Container(
                     padding=30, alignment=ft.Alignment.CENTER,
@@ -671,7 +832,7 @@ def main(page: ft.Page):
             for c in clientes:
                 # ⚠️ Ordem da tupla = ordem do SELECT em cadastro_cliente.buscar_clientes().
                 # Se mudar lá, ajuste aqui (senão os campos saem trocados sem erro).
-                (idc, nome, cpf, tel, email, end, obs, ativo) = c
+                (idc, nome, cpf, tel, email, end, obs, ativo, nasc, origem) = c
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                     bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
@@ -689,30 +850,45 @@ def main(page: ft.Page):
                     acao = ft.IconButton(ft.Icons.RESTORE, icon_color=ft.Colors.GREEN_500,
                                          tooltip="Reativar",
                                          on_click=lambda e, i=idc: feedback_acao(mod_cli.reativar_cliente(i), "Cliente reativado.", atualizar))
-                linhas.append(ft.DataRow(cells=[
+
+                celulas = [
                     ft.DataCell(ft.Text(str(idc))),
                     ft.DataCell(ft.Text(nome or "")),
                     ft.DataCell(ft.Text(tel or "—")),
                     ft.DataCell(ft.Text(email or "—")),
                     ft.DataCell(badge),
-                    ft.DataCell(ft.Row(spacing=0, controls=[
-                        # Editar passa a tupla inteira (cc=c) para o formulário preencher os campos.
-                        ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
-                                      on_click=lambda e, cc=c: form_cliente(cc)),
-                        acao,
-                    ])),
-                ]))
+                ]
+                if extra_titulo:
+                    celulas.append(ft.DataCell(ft.Text(
+                        extra.get(idc, "—"), weight=ft.FontWeight.W_600,
+                        color=COR_PRIMARIA)))
+                celulas.append(ft.DataCell(ft.Row(spacing=0, controls=[
+                    botao_whatsapp(idc, nome, tel, sugerido),
+                    ft.IconButton(ft.Icons.BADGE, icon_color=ft.Colors.INDIGO_400,
+                                  tooltip="Ver ficha",
+                                  on_click=lambda e, i=idc: abrir_ficha(i)),
+                    # Editar passa a tupla inteira (cc=c) para o formulário preencher os campos.
+                    ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
+                                  on_click=lambda e, cc=c: form_cliente(cc)),
+                    acao,
+                ])))
+                linhas.append(ft.DataRow(cells=celulas))
+
+            colunas = [
+                ft.DataColumn(ft.Text("ID")),
+                ft.DataColumn(ft.Text("Nome")),
+                ft.DataColumn(ft.Text("Telefone")),
+                ft.DataColumn(ft.Text("E-mail")),
+                ft.DataColumn(ft.Text("Status")),
+            ]
+            if extra_titulo:
+                colunas.append(ft.DataColumn(ft.Text(extra_titulo)))
+            colunas.append(ft.DataColumn(ft.Text("Ações")))
+
             return ft.DataTable(
                 expand=True,
                 heading_row_color=ft.Colors.GREY_50,
-                columns=[
-                    ft.DataColumn(ft.Text("ID")),
-                    ft.DataColumn(ft.Text("Nome")),
-                    ft.DataColumn(ft.Text("Telefone")),
-                    ft.DataColumn(ft.Text("E-mail")),
-                    ft.DataColumn(ft.Text("Status")),
-                    ft.DataColumn(ft.Text("Ações")),
-                ],
+                columns=colunas,
                 rows=linhas,
             )
 
@@ -725,6 +901,41 @@ def main(page: ft.Page):
         # Liga os filtros à atualização ao vivo.
         campo_busca.on_change = atualizar
         mostrar_inativos.on_change = atualizar
+        dd_filtro.on_change = atualizar
+
+        # ---------- Exportar para Excel/CSV ----------
+        def exportar_csv(e=None):
+            """
+            Salva a lista que está na tela (respeitando busca e filtro) num .csv,
+            que o Excel abre com dois cliques. utf-8-sig = UTF-8 com BOM: é o que
+            faz o Excel do Windows entender os acentos (sem isso vira "João").
+            """
+            clientes = visiveis["clientes"]
+            if not clientes:
+                falha("Não há clientes na lista para exportar.")
+                return
+            pasta = os.path.join(os.path.dirname(__file__), "exportacoes")
+            os.makedirs(pasta, exist_ok=True)
+            arquivo = os.path.join(
+                pasta, f"clientes_{datetime.now():%Y-%m-%d_%H%M%S}.csv")
+            try:
+                with open(arquivo, "w", newline="", encoding="utf-8-sig") as f:
+                    w = csv.writer(f, delimiter=";")   # ; = separador que o Excel BR espera
+                    cab = ["ID", "Nome", "CPF/CNPJ", "Telefone", "E-mail", "Endereço",
+                           "Observações", "Status", "Nascimento", "Como conheceu"]
+                    if visiveis["extra_titulo"]:
+                        cab.append(visiveis["extra_titulo"])
+                    w.writerow(cab)
+                    for c in clientes:
+                        linha = [c[0], c[1], c[2] or "", c[3] or "", c[4] or "", c[5] or "",
+                                 c[6] or "", "Ativo" if c[7] else "Inativo",
+                                 val.data_br(c[8]), c[9] or ""]
+                        if visiveis["extra_titulo"]:
+                            linha.append(visiveis["extra"].get(c[0], ""))
+                        w.writerow(linha)
+                sucesso(f"{len(clientes)} cliente(s) exportado(s) para a pasta 'exportacoes'.")
+            except Exception as erro:
+                falha(f"Não foi possível exportar: {erro}")
 
         def confirmar_desativar(idc):
             # Soft delete: pede confirmação e chama desativar_cliente (não apaga o
@@ -748,10 +959,162 @@ def main(page: ft.Page):
                 ],
             ))
 
+        # ---------- FICHA DO CLIENTE (visão 360°) ----------
+        def abrir_ficha(id_cliente):
+            """
+            Junta numa tela só o que antes estava espalhado por 4 telas: veículos,
+            histórico de comandas, quanto o cliente já gastou, pontos de fidelidade
+            e plano assinado. Tudo vem pronto de mod_cli.ficha_cliente().
+            """
+            f = mod_cli.ficha_cliente(id_cliente)
+            if not f:
+                falha("Não foi possível carregar a ficha. Verifique a conexão com o banco.")
+                return
+
+            (idc, nome, cpf, tel, email, end, obs, ativo, nasc, origem) = f["cliente"]
+            r = f["resumo"]
+
+            def mini_card(titulo, valor, icone, cor):
+                return ft.Container(
+                    width=150, padding=12, bgcolor=ft.Colors.GREY_50, border_radius=10,
+                    content=ft.Column(spacing=2, controls=[
+                        ft.Row(spacing=6, controls=[
+                            ft.Icon(icone, size=16, color=cor),
+                            ft.Text(titulo, size=11, color=ft.Colors.GREY_700)]),
+                        ft.Text(str(valor), size=17, weight=ft.FontWeight.BOLD, color=cor),
+                    ]),
+                )
+
+            # Linha de indicadores do cliente
+            cards = ft.Row(wrap=True, spacing=10, run_spacing=10, controls=[
+                mini_card("Visitas", r["visitas"], ft.Icons.LOCAL_CAR_WASH, COR_PRIMARIA),
+                mini_card("Total gasto", brl(r["total_gasto"]), ft.Icons.PAYMENTS,
+                          ft.Colors.GREEN_700),
+                mini_card("Ticket médio", brl(r["ticket_medio"]), ft.Icons.PRICE_CHECK,
+                          ft.Colors.CYAN_700),
+                mini_card("Pontos", f["pontos"], ft.Icons.STARS, ft.Colors.AMBER_800),
+                mini_card("Em aberto", brl(r["em_aberto"]), ft.Icons.WARNING_AMBER,
+                          ft.Colors.RED_600 if (r["em_aberto"] or 0) > 0 else ft.Colors.GREY_500),
+            ])
+
+            # Dados de contato / cadastro
+            if r["ultima_visita"]:
+                ultima = f"{fmt_dt(r['ultima_visita'])} ({r['dias_sem_vir']} dias atrás)"
+            else:
+                ultima = "nunca veio"
+            idade_txt = ""
+            if nasc:
+                anos = val.idade(nasc)
+                idade_txt = f"{val.data_br(nasc)} ({anos} anos)"
+
+            def linha_info(rotulo, valor, icone):
+                return ft.Row(spacing=8, controls=[
+                    ft.Icon(icone, size=15, color=ft.Colors.GREY_600),
+                    ft.Text(f"{rotulo}:", size=12, color=ft.Colors.GREY_700,
+                            weight=ft.FontWeight.W_600),
+                    ft.Text(valor or "—", size=12, expand=True),
+                ])
+
+            dados = ft.Column(spacing=6, controls=[
+                linha_info("Telefone", tel, ft.Icons.PHONE),
+                linha_info("E-mail", email, ft.Icons.EMAIL),
+                linha_info("CPF/CNPJ", cpf, ft.Icons.BADGE),
+                linha_info("Endereço", end, ft.Icons.PLACE),
+                linha_info("Aniversário", idade_txt, ft.Icons.CAKE),
+                linha_info("Como conheceu", origem, ft.Icons.CAMPAIGN),
+                linha_info("Última visita", ultima, ft.Icons.HISTORY),
+                linha_info("Plano", f"{f['plano'][0]} — {brl(f['plano'][1])}/mês"
+                           if f["plano"] else "sem plano", ft.Icons.CARD_MEMBERSHIP),
+                linha_info("Observações", obs, ft.Icons.NOTES),
+            ])
+
+            # Veículos
+            if f["veiculos"]:
+                # (id, placa, marca, modelo, ano, cor, categoria)
+                veic = ft.Column(spacing=4, controls=[
+                    ft.Row(spacing=8, controls=[
+                        ft.Icon(ft.Icons.DIRECTIONS_CAR, size=16, color=COR_ACENTO),
+                        ft.Text(f"{v[1]}", weight=ft.FontWeight.BOLD, size=13),
+                        ft.Text(" ".join(str(x) for x in (v[2], v[3], v[4]) if x) or "—",
+                                size=12, color=ft.Colors.GREY_800),
+                        ft.Text(f"· {v[6]}", size=11, color=ft.Colors.GREY_600),
+                    ]) for v in f["veiculos"]
+                ])
+            else:
+                veic = ft.Text("Nenhum veículo cadastrado.", size=12, color=ft.Colors.GREY_500)
+
+            # Serviços preferidos (chips)
+            if f["servicos"]:
+                preferidos = ft.Row(wrap=True, spacing=6, run_spacing=6, controls=[
+                    ft.Container(
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                        border_radius=20, bgcolor=ft.Colors.BLUE_50,
+                        content=ft.Text(f"{s[0]} ({s[1]}x)", size=11,
+                                        color=COR_PRIMARIA))
+                    for s in f["servicos"]
+                ])
+            else:
+                preferidos = ft.Text("Ainda sem serviços registrados.", size=12,
+                                     color=ft.Colors.GREY_500)
+
+            # Histórico de comandas
+            if f["comandas"]:
+                # (id_ordem, entrada_em, placa, status, valor_final, valor_pago)
+                hist = ft.DataTable(
+                    heading_row_color=ft.Colors.GREY_50,
+                    columns=[ft.DataColumn(ft.Text("Comanda")),
+                             ft.DataColumn(ft.Text("Data")),
+                             ft.DataColumn(ft.Text("Veículo")),
+                             ft.DataColumn(ft.Text("Status")),
+                             ft.DataColumn(ft.Text("Valor"))],
+                    rows=[ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(f"#{o[0]}")),
+                        ft.DataCell(ft.Text(fmt_dt(o[1]))),
+                        ft.DataCell(ft.Text(o[2] or "—")),
+                        ft.DataCell(ft.Text(str(o[3]).replace("_", " ").capitalize())),
+                        ft.DataCell(ft.Text(brl(o[4]), weight=ft.FontWeight.W_600)),
+                    ]) for o in f["comandas"]],
+                )
+            else:
+                hist = ft.Text("Este cliente ainda não tem comandas.", size=12,
+                               color=ft.Colors.GREY_500)
+
+            def secao(titulo, conteudo):
+                return ft.Column(spacing=6, controls=[
+                    ft.Text(titulo, size=13, weight=ft.FontWeight.BOLD, color=COR_PRIMARIA),
+                    conteudo,
+                    ft.Divider(height=10),
+                ])
+
+            abrir_dialog(ft.AlertDialog(
+                modal=True,
+                title_padding=0,
+                title=cabecalho_dialog(nome, ft.Icons.BADGE),
+                content=ft.Container(width=720, height=520, content=ft.Column(
+                    scroll=ft.ScrollMode.AUTO, spacing=10, controls=[
+                        cards,
+                        ft.Divider(height=10),
+                        secao("Dados do cliente", dados),
+                        secao("Veículos", veic),
+                        secao("Serviços preferidos", preferidos),
+                        secao("Histórico de comandas", hist),
+                    ])),
+                actions=[
+                    ft.FilledButton(
+                        "WhatsApp", icon=ft.Icons.CHAT,
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_600),
+                        on_click=lambda e: (fechar_dialog(),
+                                            menu_whatsapp(idc, nome, tel))),
+                    ft.TextButton("Editar", on_click=lambda e: (fechar_dialog(),
+                                                                form_cliente(f["cliente"]))),
+                    ft.TextButton("Fechar", on_click=lambda e: fechar_dialog()),
+                ],
+            ))
+
         def form_cliente(cliente=None):
             # Um único formulário serve para CRIAR (cliente=None) e EDITAR (recebe a
             # tupla vinda da tabela). `editando` alterna rótulos e qual função do
-            # backend é chamada no salvar(). Os índices cliente[1..6] seguem a mesma
+            # backend é chamada no salvar(). Os índices cliente[1..9] seguem a mesma
             # ordem da tupla desempacotada em montar_linhas().
             editando = cliente is not None
             f_nome = ft.TextField(label="Nome *", value=cliente[1] if editando else "", width=420)
@@ -759,26 +1122,43 @@ def main(page: ft.Page):
             f_tel = ft.TextField(label="Telefone", value=(cliente[3] or "") if editando else "", width=200)
             f_email = ft.TextField(label="E-mail", value=(cliente[4] or "") if editando else "", width=420)
             f_end = ft.TextField(label="Endereço", value=(cliente[5] or "") if editando else "", width=420)
+            f_nasc = ft.TextField(
+                label="Nascimento", hint_text="dd/mm/aaaa", width=200,
+                value=val.data_br(cliente[8]) if editando else "",
+                helper=ft.Text("Usado na campanha de aniversário", size=10))
+            f_origem = ft.Dropdown(
+                label="Como conheceu", width=200,
+                value=(cliente[9] or None) if editando else None,
+                options=[ft.dropdown.Option(key=o, text=o) for o in
+                         ("Indicação de amigo", "Passou na frente", "Instagram",
+                          "Facebook", "Google", "Cliente antigo", "Outro")])
             f_obs = ft.TextField(label="Observações", value=(cliente[6] or "") if editando else "",
                                  width=420, multiline=True, min_lines=2, max_lines=3)
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
-            def salvar(e):
-                # Valida o obrigatório, normaliza vazios para None (campos opcionais)
-                # e chama editar/inserir conforme o modo. `strip() or None` evita
-                # gravar strings vazias no lugar de NULL.
-                if not (f_nome.value or "").strip():
-                    erro_form.value = "O nome é obrigatório."
-                    page.update()
-                    return
-                vals = dict(
-                    nome=f_nome.value.strip(),
-                    cpf_cnpj=(f_cpf.value or "").strip() or None,
-                    telefone=(f_tel.value or "").strip() or None,
-                    email=(f_email.value or "").strip() or None,
-                    endereco=(f_end.value or "").strip() or None,
-                    observacoes=(f_obs.value or "").strip() or None,
-                )
+            # ----- Máscaras: formatam o texto enquanto o operador digita -----
+            # O on_change reescreve o próprio campo já formatado. Como a máscara
+            # ignora o que não é número, digitar "47999990000" vira "(47) 99999-0000"
+            # sozinho — o operador nunca precisa digitar parênteses ou traço.
+            # ⚠️ Flet 0.85: o aviso de erro do campo é `error=` e recebe um CONTROL
+            # (como o `helper=`), não `error_text="..."` com string (isso é da API
+            # antiga e seria ignorado em silêncio — o erro nunca apareceria na tela).
+            def marcar_erro(campo, texto):
+                campo.error = ft.Text(texto, size=11) if texto else None
+
+            def mascarar(campo, funcao):
+                def _on_change(e):
+                    campo.value = funcao(campo.value)
+                    marcar_erro(campo, None)     # limpa o erro assim que ele corrige
+                    page.update()                # repinta pela página (igual ao resto do app)
+                return _on_change
+
+            f_cpf.on_change = mascarar(f_cpf, val.mascara_cpf_cnpj)
+            f_tel.on_change = mascarar(f_tel, val.mascara_telefone)
+            f_nasc.on_change = mascarar(f_nasc, val.mascara_data)
+
+            def gravar(vals):
+                """Grava de fato (chamado direto, ou depois do aviso de duplicidade)."""
                 if editando:
                     ok = mod_cli.editar_cliente(cliente[0], **vals)  # cliente[0] = id
                 else:
@@ -790,17 +1170,102 @@ def main(page: ft.Page):
                 else:
                     aviso("Erro", "Não foi possível salvar. Verifique a conexão com o banco.")
 
+            def salvar(e):
+                # 1) Validações. Cada campo errado ganha um aviso embaixo dele,
+                #    em vez de uma mensagem genérica solta no rodapé.
+                for campo in (f_cpf, f_tel, f_email, f_nasc):
+                    marcar_erro(campo, None)
+                erro_form.value = ""
+                problemas = []
+
+                if not (f_nome.value or "").strip():
+                    problemas.append("O nome é obrigatório.")
+
+                if not val.validar_cpf_cnpj(f_cpf.value):
+                    marcar_erro(f_cpf, "CPF/CNPJ inválido")
+                    problemas.append("Confira o CPF/CNPJ.")
+
+                if not val.validar_telefone(f_tel.value):
+                    marcar_erro(f_tel, "Telefone incompleto (com DDD)")
+                    problemas.append("Confira o telefone.")
+
+                if not val.validar_email(f_email.value):
+                    marcar_erro(f_email, "E-mail inválido")
+                    problemas.append("Confira o e-mail.")
+
+                texto_nasc = (f_nasc.value or "").strip()
+                nascimento = val.parse_data_br(texto_nasc)
+                if texto_nasc and nascimento is None:
+                    marcar_erro(f_nasc, "Data inválida")
+                    problemas.append("Confira a data de nascimento.")
+
+                if problemas:
+                    erro_form.value = problemas[0]
+                    page.update()
+                    return
+
+                # 2) Monta os valores. `strip() or None` grava NULL em vez de string
+                #    vazia — e agora, na edição, isso APAGA de verdade o campo
+                #    (o editar_cliente não usa mais COALESCE).
+                vals = dict(
+                    nome=f_nome.value.strip(),
+                    cpf_cnpj=(f_cpf.value or "").strip() or None,
+                    telefone=(f_tel.value or "").strip() or None,
+                    email=(f_email.value or "").strip() or None,
+                    endereco=(f_end.value or "").strip() or None,
+                    observacoes=(f_obs.value or "").strip() or None,
+                    data_nascimento=nascimento,
+                    como_conheceu=dd_key(f_origem),
+                )
+
+                # 3) Anti-duplicidade: antes de criar/editar, avisa se já existe
+                #    alguém com o mesmo telefone, documento ou nome. Não bloqueia —
+                #    às vezes é marido e mulher com o mesmo telefone. Só pergunta.
+                dups = mod_cli.possiveis_duplicados(
+                    nome=vals["nome"], telefone=vals["telefone"],
+                    cpf_cnpj=vals["cpf_cnpj"],
+                    ignorar_id=cliente[0] if editando else None)
+                if dups:
+                    fechar_dialog()
+                    abrir_dialog(ft.AlertDialog(
+                        modal=True,
+                        title=ft.Text("Cliente parecido já cadastrado"),
+                        content=ft.Column(tight=True, spacing=8, controls=[
+                            ft.Text("Encontramos quem já está no sistema:", size=13),
+                            *[ft.Row(spacing=8, controls=[
+                                ft.Icon(ft.Icons.PERSON, size=16, color=ft.Colors.AMBER_800),
+                                ft.Text(f"{d[1]} — {d[2] or 'sem telefone'}",
+                                        size=12, weight=ft.FontWeight.W_600),
+                                ft.Text(f"({d[4]})", size=11, color=ft.Colors.GREY_600),
+                            ]) for d in dups],
+                            ft.Text("Quer cadastrar mesmo assim?", size=12,
+                                    color=ft.Colors.GREY_700),
+                        ]),
+                        actions=[
+                            ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
+                            ft.FilledButton("Salvar assim mesmo",
+                                            on_click=lambda e: gravar(vals),
+                                            style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
+                        ],
+                    ))
+                    return
+
+                gravar(vals)
+
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title_padding=0,
                 title=cabecalho_dialog(
                     "Editar cliente" if editando else "Novo cliente",
                     ft.Icons.PERSON if editando else ft.Icons.PERSON_ADD),
-                content=ft.Container(width=460, content=ft.Column(tight=True, spacing=12, controls=[
-                    f_nome,
-                    ft.Row([f_cpf, f_tel], spacing=20),
-                    f_email, f_end, f_obs, erro_form,
-                ])),
+                content=ft.Container(width=460, content=ft.Column(
+                    tight=True, spacing=12, scroll=ft.ScrollMode.AUTO, controls=[
+                        f_nome,
+                        ft.Row([f_cpf, f_tel], spacing=20),
+                        f_email, f_end,
+                        ft.Row([f_nasc, f_origem], spacing=20),
+                        f_obs, erro_form,
+                    ])),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Salvar", on_click=salvar,
@@ -812,11 +1277,14 @@ def main(page: ft.Page):
             "Novo cliente", icon=ft.Icons.ADD, on_click=lambda e: form_cliente(),
             style=ft.ButtonStyle(bgcolor=COR_PRIMARIA))
 
+        botao_exportar = ft.OutlinedButton(
+            "Exportar CSV", icon=ft.Icons.DOWNLOAD, on_click=exportar_csv)
+
         corpo_tabela.controls = [montar_linhas()]
 
         return ft.Column(expand=True, spacing=20, controls=[
             cabecalho("Clientes", "Cadastro e gestão de clientes", acao=botao_novo),
-            ft.Row([campo_busca, mostrar_inativos], spacing=16),
+            ft.Row([campo_busca, dd_filtro, mostrar_inativos, botao_exportar], spacing=16),
             card_tabela("Lista de clientes", corpo_tabela),
         ])
 

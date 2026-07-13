@@ -19,6 +19,9 @@ env/
 # Recibos gerados pelo app
 recibos/
 
+# Planilhas exportadas pela tela de Clientes
+exportacoes/
+
 # Sistema operacional
 Thumbs.db
 desktop.ini
