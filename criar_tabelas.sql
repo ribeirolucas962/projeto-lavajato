@@ -14,20 +14,29 @@
 -- MÓDULO 1 - CLIENTE
 -- ================================================================
 CREATE TABLE IF NOT EXISTS cliente (
-    id_cliente     SERIAL PRIMARY KEY,
-    nome           VARCHAR(150) NOT NULL,
-    cpf_cnpj       VARCHAR(18) UNIQUE,
-    telefone       VARCHAR(20),
-    email          VARCHAR(120),
-    endereco       TEXT,
-    observacoes    TEXT,
-    ativo          BOOLEAN     NOT NULL DEFAULT TRUE,
-    criado_em      TIMESTAMP   NOT NULL DEFAULT NOW(),
-    atualizado_em  TIMESTAMP   NOT NULL DEFAULT NOW()
+    id_cliente      SERIAL PRIMARY KEY,
+    nome            VARCHAR(150) NOT NULL,
+    cpf_cnpj        VARCHAR(18) UNIQUE,
+    telefone        VARCHAR(20),
+    email           VARCHAR(120),
+    endereco        TEXT,
+    observacoes     TEXT,
+    data_nascimento DATE,               -- aniversário: base da campanha de parabéns
+    como_conheceu   VARCHAR(40),        -- origem: indicação, Instagram, passou na frente...
+    ativo           BOOLEAN     NOT NULL DEFAULT TRUE,
+    criado_em       TIMESTAMP   NOT NULL DEFAULT NOW(),
+    atualizado_em   TIMESTAMP   NOT NULL DEFAULT NOW()
 );
+
+-- Upgrade de bancos já existentes: aniversário e origem do cliente.
+ALTER TABLE cliente ADD COLUMN IF NOT EXISTS data_nascimento DATE;
+ALTER TABLE cliente ADD COLUMN IF NOT EXISTS como_conheceu   VARCHAR(40);
 
 CREATE INDEX IF NOT EXISTS idx_cliente_nome     ON cliente (nome);
 CREATE INDEX IF NOT EXISTS idx_cliente_telefone ON cliente (telefone);
+
+COMMENT ON COLUMN cliente.data_nascimento IS 'Aniversário do cliente (usado na campanha de parabéns por WhatsApp)';
+COMMENT ON COLUMN cliente.como_conheceu   IS 'Como o cliente chegou até o lava-jato (marketing)';
 
 
 -- ================================================================
