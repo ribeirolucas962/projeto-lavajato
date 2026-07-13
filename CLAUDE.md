@@ -62,7 +62,7 @@ ao `DB_config` em `conexao.py`.
 
 | # | Módulo | Tabelas | Arquivo .py | Status |
 |---|--------|---------|-------------|--------|
-| 1 | Cliente | `cliente` | `cadastro_cliente.py` | ✅ CRUD feito |
+| 1 | Cliente | `cliente` | `cadastro_cliente.py` | ✅ CRUD + ficha 360° + campanhas |
 | 2 | Veículo | `categoria_veiculo`, `veiculo` | `cadastro_veiculo.py` | ✅ CRUD feito |
 | 3 | Catálogo (serviços e preços) | `servico`, `servico_preco` | `catalogo_servicos.py` | ✅ CRUD feito |
 | 4 | Agendamento | `agendamento`, `agendamento_servico` | `agendamento.py` | ✅ CRUD feito |
@@ -80,6 +80,18 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 `documentacao_modulos_lavajato.txt`. A ordem de implementação segue a numeração acima.
 
 ### Decisões de modelagem
+- **Cliente com aniversário e origem:** `cliente.data_nascimento` (DATE) e
+  `cliente.como_conheceu` (VARCHAR 40 — "Indicação de amigo", "Instagram",
+  "Passou na frente"…), via `ALTER TABLE ... IF NOT EXISTS`. Sustentam a campanha
+  de parabéns no WhatsApp e a leitura de marketing (de onde vêm os clientes).
+  ⚠️ Colunas novas entram **no fim do SELECT** de `buscar_clientes()`: as outras
+  telas leem a tupla por posição (`c[0]`, `c[1]`, `c[3]`) e continuam intactas.
+- **`editar_cliente()` não usa mais COALESCE:** o `SET campo = COALESCE(%s, campo)`
+  tornava **impossível apagar** um campo (limpar o e-mail e salvar trazia o valor
+  velho de volta). Agora o SET é montado dinamicamente com o sentinela
+  `MANTER`: campo não passado = não mexe; campo passado como `None` = grava NULL
+  (apaga). Os nomes das colunas vêm de um dict interno e os valores seguem como
+  `%s` — sem risco de SQL injection. O `nome` (NOT NULL) é ignorado se vier vazio.
 - **Categoria de veículo normalizada:** porte é FK (`veiculo.id_categoria` →
   `categoria_veiculo`), não texto livre. Categorias seed: Moto, Pequeno, Médio,
   Grande, SUV, Caminhonete, Caminhão.
@@ -112,6 +124,12 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - `conexao.py` — conexão única com o banco.
 - `criar_tabelas.sql` / `criar_tabelas.py` — schema e criação das tabelas.
 - `cadastro_cliente.py`, `cadastro_veiculo.py` — módulos já implementados (referência de padrão).
+- `validadores.py` — **sem banco**: máscaras (CPF/CNPJ, telefone, data) e validação
+  (CPF/CNPJ por dígito verificador, e-mail, telefone, data). `python validadores.py` testa.
+- `whatsapp.py` — **sem banco**: monta o link `wa.me/<numero>?text=<msg>` e os 6 modelos
+  de mensagem (veículo pronto, feliz aniversário, promoção, sentimos sua falta, em
+  andamento, lembrete de pagamento). **Não é API**: o link abre a conversa com o texto
+  já digitado e o atendente aperta enviar — de graça, sem token nem número verificado.
 - `dashboard.py` — consultas somente leitura dos indicadores do Dashboard.
 - `app.py` — **interface gráfica (Flet)**: login + 13 telas reaproveitando os módulos de CRUD.
   Rodar com `python app.py`. Logo da marca em `imagen/trucka car.png`.
@@ -160,5 +178,29 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   fechar". Corrigido convertendo o `saldo_real` para `Decimal` no início da função
   (`Decimal(str(saldo_real))`). Coberto pelo teste E2E do backend.
 - **UI:** menu lateral com fonte/ícones maiores (ícones 28, texto 18) para melhor legibilidade.
+- **Módulo 1 (Cliente) turbinado — 2026-07-12.** A tela de Clientes deixou de ser um
+  cadastro isolado e virou a ferramenta de relacionamento:
+  - **WhatsApp** (ícone verde na lista e botão na ficha): abre a conversa com a mensagem
+    pronta escolhida num menu (ver `whatsapp.py`). O veículo do cliente entra no texto
+    ("seu Fiat Toro (ABC-1234) está pronto"). `page.launch_url(link)`.
+  - **Ficha do cliente** (ícone do crachá): visão 360° num diálogo — KPIs (visitas, total
+    gasto, ticket médio, pontos, valor em aberto), dados de cadastro, veículos, serviços
+    preferidos e histórico das 20 últimas comandas. Vem tudo de `mod_cli.ficha_cliente()`,
+    que usa o **mesmo critério de faturamento do `dashboard.py`** (status finalizado/entregue,
+    valor final) — por isso os números batem entre as telas.
+  - **Listas de campanha** (dropdown "Lista"): Aniversariantes do mês / Sumidos (60+ dias) /
+    Top 10 que mais gastam. Cada modo filtra a tabela, acrescenta uma coluna com a
+    informação relevante e **sugere a mensagem de WhatsApp** correspondente.
+  - **Máscaras e validação** no formulário: CPF/CNPJ, telefone e data se formatam sozinhos
+    ao digitar; CPF/CNPJ é conferido por dígito verificador; e-mail e telefone validados.
+    Erro aparece embaixo do campo.
+  - **Anti-duplicidade:** ao salvar, avisa se já existe cliente com o mesmo telefone,
+    documento ou nome — mas não bloqueia (marido e mulher podem dividir o telefone).
+  - **Exportar CSV** da lista que está na tela (respeita busca e filtro) → pasta
+    `exportacoes/` (ignorada pelo git), em `utf-8-sig` + `;` para o Excel BR abrir certo.
+- ⚠️ **Mais armadilhas do Flet 0.85** (achadas neste módulo): o aviso de erro do campo é
+  `TextField(error=ft.Text(...))` — um **Control** —, **não** `error_text="..."` (a API
+  antiga é ignorada em silêncio: o erro nunca aparece). E o rótulo do botão fica em
+  `.content`, não em `.text`.
 - **Próximos passos possíveis:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
   executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.
