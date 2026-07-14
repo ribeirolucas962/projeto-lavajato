@@ -202,5 +202,35 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   `TextField(error=ft.Text(...))` — um **Control** —, **não** `error_text="..."` (a API
   antiga é ignorada em silêncio: o erro nunca aparece). E o rótulo do botão fica em
   `.content`, não em `.text`.
-- **Próximos passos possíveis:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
+- **Fix do WhatsApp (`app.py`, `menu_whatsapp`):** `page.launch_url()` **não abre nada** nesta
+  versão do Flet — virou corrotina (async) e, chamada de um handler comum, devolve uma corrotina
+  que ninguém aguarda; falha em silêncio (só o `RuntimeWarning "coroutine was never awaited"` no
+  terminal). Trocado por `webbrowser.open(link)` (síncrono, biblioteca padrão, abre o navegador
+  do Windows — que é onde o WhatsApp Web roda). Testado e funcionando.
+
+### 🔜 Próximo: turbinar o Módulo 2 (Veículo) — combinado em 2026-07-13
+A tela de Veículos hoje é CRUD + busca + histórico de comandas. Backlog acordado, **na ordem**:
+
+**Fase 1 — bugs e validação**
+1. **Placa duplicada dá mensagem mentirosa.** `veiculo.placa` é UNIQUE: o INSERT falha,
+   `inserir_veiculo()` devolve `None` e a tela diz *"Verifique a conexão com o banco"*. Deve
+   avisar que a placa já existe (e de quem é o veículo).
+2. **`editar_veiculo()` ainda usa COALESCE** → **impossível apagar** cor/marca/modelo/ano
+   (limpar o campo e salvar traz o valor velho de volta). Mesmo bug já corrigido em
+   `cadastro_cliente.py`: aplicar a receita do sentinela `MANTER` (ver [Decisões de modelagem]).
+3. **Placa sem máscara/validação** (hoje só `.upper()`): validar padrão antigo `ABC-1234` e
+   Mercosul `ABC1D23` no `validadores.py`. **Ano** aceita 1800/3050 — limitar a faixa razoável.
+4. **Dropdown de Cliente lista todos os clientes** — inviável com centenas; precisa de busca.
+
+**Fase 2 — "raio-x do carro"**
+5. **WhatsApp na linha do veículo** (faz mais sentido aqui que em Clientes: a mensagem
+   "seu Fiat Toro (ABC-1234) está pronto" nasce com placa + dono na mão).
+6. **Coluna "Última lavagem"** na tabela (hoje só abrindo o histórico).
+7. **Ficha do veículo 360°** (espelho da ficha do cliente): visitas, total gasto, serviços
+   preferidos e **histórico de avarias** das vistorias de entrada — comprovante contra
+   reclamação de dano pré-existente.
+8. **Botão "Novo veículo" dentro da ficha do cliente**, com o dono já preenchido.
+9. **Exportar CSV** da lista, como em Clientes.
+
+- **Depois disso:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
   executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.

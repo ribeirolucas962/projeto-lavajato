@@ -43,6 +43,7 @@ PADRÃO DE CADA TELA (pagina_*): todas seguem a MESMA receita, então entender u
 
 import os
 import csv
+import webbrowser        # abre o WhatsApp no navegador (ver menu_whatsapp)
 from datetime import datetime
 import flet as ft
 
@@ -395,7 +396,18 @@ def main(page: ft.Page):
             if not link:
                 falha("Telefone inválido para o WhatsApp.")
                 return
-            page.launch_url(link)      # abre o WhatsApp Web/app no navegador
+            # ⚠️ NÃO usar page.launch_url(): nesta versão do Flet ela é uma corrotina
+            # (async) e está descontinuada. Chamada de um handler comum, ela devolve
+            # uma corrotina que ninguém aguarda -> o navegador NUNCA abre, em silêncio
+            # (só o RuntimeWarning "coroutine was never awaited" no terminal).
+            # webbrowser.open() é síncrono, da biblioteca padrão, e abre o navegador
+            # padrão do Windows — que é justamente onde o WhatsApp Web roda.
+            # (Vale para o app desktop, que é o nosso caso.)
+            try:
+                webbrowser.open(link)
+            except Exception as erro:
+                falha(f"Não consegui abrir o WhatsApp: {erro}")
+                return
             fechar_dialog()
             sucesso("WhatsApp aberto. Revise o texto e envie.")
 
