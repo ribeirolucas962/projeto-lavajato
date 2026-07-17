@@ -20,9 +20,15 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
 
 ## Banco de dados
 
-- **SGBD:** PostgreSQL 16, em `localhost:5432`.
-- **Banco do projeto:** `lavajato_db` (user `postgres`, senha `123456`).
+- **Banco EM USO (desde 2026-07-15): PostgreSQL 18.4 no servidor TrueNAS da rede local**
+  — host `192.168.1.19:5432`, banco `dados`, user `nepomuceno` (senha no `.env`).
+  Migração completa feita em 15/07: 22 tabelas + todos os dados copiados do banco local
+  (contagens conferidas tabela a tabela). O `.env` aponta pra lá.
+- **Banco local antigo (backup/desenvolvimento):** PostgreSQL 16 em `localhost:5432`,
+  banco `lavajato_db` (user `postgres`, senha `123456`). Continua intacto com os dados
+  de antes da migração; para voltar a usá-lo, troque o bloco comentado no `.env`.
 - Conexão centralizada em `conexao.py` → função `conectar()` retorna a conexão (ou `None`).
+  Variáveis de ambiente do terminal **têm prioridade** sobre o `.env` (`os.environ.setdefault`).
 - Schema completo em `criar_tabelas.sql` (fonte única da verdade). Recriável com
   `python criar_tabelas.py` — é idempotente (`IF NOT EXISTS` / `ON CONFLICT`).
 
@@ -52,6 +58,10 @@ ao `DB_config` em `conexao.py`.
     (`cursor.close()` + `conexao.close()`);
   - sempre **queries parametrizadas** (`%s`), nunca f-string com dados do usuário.
 - **Soft delete:** coluna `ativo BOOLEAN` — `desativar_*` e `reativar_*` em vez de DELETE.
+  - **Exceção (2026-07-16):** `excluir_cliente()`/`excluir_veiculo()` fazem DELETE de
+    verdade, **só para cadastro criado errado e sem vínculos** (botão "Excluir de vez",
+    lixeira vermelha nas telas Clientes/Veículos). Com histórico, as FKs sem CASCADE
+    bloqueiam e a função devolve `'vinculos'` — a tela orienta usar o Desativar.
 - **Update parcial:** `SET campo = COALESCE(%s, campo)` — só altera o que vier preenchido.
 - **Dinheiro:** `NUMERIC(10,2)`. **Quantidade de estoque:** `NUMERIC(12,3)` (aceita litros).
 - **Buscas:** parciais com `ILIKE` e `%termo%`.
@@ -168,6 +178,20 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   via `salvar_financeiro()`, e gera recibo em PDF (`gerar_recibo_pdf()` com reportlab),
   salvo em `recibos/` (pasta ignorada pelo git). O recibo lista **Serviço · Lavador · Valor**
   e traz seção **Vistoria de entrada** (avarias) quando preenchida.
+- **Integração Comanda → Caixa (2026-07-16):** salvar o pagamento da comanda agora
+  lança a entrada no caixa aberto automaticamente. A tela chama a nova
+  `caixa.total_entradas_da_ordem(id_ordem)` (soma de `caixa_movimento` por `id_ordem`,
+  tipo entrada) e registra só a **diferença** para o valor pago — re-salvar o pagamento
+  não duplica, e pagar o resto depois lança só o resto. Sem caixa aberto: o pagamento
+  é salvo mesmo assim e um aviso manda abrir o caixa e salvar de novo (aí o delta entra).
+  Valor pago menor que o já lançado: aviso sugere registrar saída manual na tela Caixa.
+  O movimento fica rastreável (grava `id_ordem` + descrição "Comanda #N — cliente (placa)").
+- **Reabrir comanda para correção (2026-07-16):** comanda entregue/cancelada fica
+  travada na tela (edição desabilitada); o botão **"Reabrir p/ correção"** (só aparece
+  nesses status, com diálogo de confirmação) destrava: entregue volta a `finalizado`
+  (continua contando no faturamento) e cancelada volta a `em_execucao`. Os horários
+  originais não mudam (`alterar_status` só grava `inicio_em`/`finalizacao_em` na 1ª vez).
+  Correção de pagamento após reabrir usa a integração com o caixa (lança só a diferença).
 - **Quem lavou + vistoria (na comanda):** dropdown "Quem lavou" ao adicionar serviço
   (grava `ordem_servico_item.id_funcionario`; item mostra "Lavou: …" ou "Sem responsável"),
   e seção "Vistoria de entrada / Observações" com `avarias`/`observacoes` via
@@ -202,27 +226,38 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   `TextField(error=ft.Text(...))` — um **Control** —, **não** `error_text="..."` (a API
   antiga é ignorada em silêncio: o erro nunca aparece). E o rótulo do botão fica em
   `.content`, não em `.text`.
+- ⚠️ **Armadilha Flet 0.85 (diálogos): nunca chame `pop_dialog` duas vezes no mesmo
+  handler.** Os diálogos ficam numa pilha; `pop_dialog` só marca `open=False` no de
+  cima e a remoção real acontece depois da animação (async). Pop duplo + push no mesmo
+  clique dessincroniza o Python do Flutter e deixa um diálogo "fantasma" preso na tela,
+  impossível de fechar (bug real no "Reabrir p/ correção", 16/07). Receita: **um diálogo
+  aberto por vez** — feche o atual ANTES de abrir o próximo (ver `confirmar_reabrir`).
 - **Fix do WhatsApp (`app.py`, `menu_whatsapp`):** `page.launch_url()` **não abre nada** nesta
   versão do Flet — virou corrotina (async) e, chamada de um handler comum, devolve uma corrotina
   que ninguém aguarda; falha em silêncio (só o `RuntimeWarning "coroutine was never awaited"` no
   terminal). Trocado por `webbrowser.open(link)` (síncrono, biblioteca padrão, abre o navegador
   do Windows — que é onde o WhatsApp Web roda). Testado e funcionando.
 
-### 🔜 Próximo: turbinar o Módulo 2 (Veículo) — combinado em 2026-07-13
-A tela de Veículos hoje é CRUD + busca + histórico de comandas. Backlog acordado, **na ordem**:
+### Módulo 2 (Veículo) — turbinando (combinado em 2026-07-13)
+A tela de Veículos era CRUD + busca + histórico de comandas. Backlog acordado, **na ordem**:
 
-**Fase 1 — bugs e validação**
-1. **Placa duplicada dá mensagem mentirosa.** `veiculo.placa` é UNIQUE: o INSERT falha,
-   `inserir_veiculo()` devolve `None` e a tela diz *"Verifique a conexão com o banco"*. Deve
-   avisar que a placa já existe (e de quem é o veículo).
-2. **`editar_veiculo()` ainda usa COALESCE** → **impossível apagar** cor/marca/modelo/ano
-   (limpar o campo e salvar traz o valor velho de volta). Mesmo bug já corrigido em
-   `cadastro_cliente.py`: aplicar a receita do sentinela `MANTER` (ver [Decisões de modelagem]).
-3. **Placa sem máscara/validação** (hoje só `.upper()`): validar padrão antigo `ABC-1234` e
-   Mercosul `ABC1D23` no `validadores.py`. **Ano** aceita 1800/3050 — limitar a faixa razoável.
-4. **Dropdown de Cliente lista todos os clientes** — inviável com centenas; precisa de busca.
+**✅ Fase 1 — bugs e validação (feita em 2026-07-14)**
+1. **Placa duplicada** — nova `buscar_veiculo_por_placa()` (em `cadastro_veiculo.py`, normaliza
+   caixa e traço: `abc1234` acha `ABC-1234`; traz inativos também). A tela checa **antes** de
+   inserir/editar e avisa *"Placa ABC-1234 já cadastrada: Fiat Uno do cliente Fulano"* em vez do
+   antigo *"verifique a conexão"*. Na edição, ignora o próprio veículo.
+2. **`editar_veiculo()` agora usa o sentinela `MANTER`** (COALESCE removido): campo não passado
+   fica como está; passado como `None` **apaga** (grava NULL). `id_cliente`/`id_categoria`/`placa`
+   são NOT NULL → vazios são ignorados (nunca viram NULL). Mesma receita do `cadastro_cliente.py`.
+   Coberto por teste de round-trip contra o banco (apagar cor e restaurar).
+3. **Placa e ano validados no `validadores.py`:** `mascara_placa()` (formata `ABC-1234`/`ABC1D23`
+   ao digitar), `validar_placa()` (antigo `[A-Z]{3}[0-9]{4}` ou Mercosul `[A-Z]{3}[0-9][A-Z][0-9]{2}`)
+   e `validar_ano_veiculo()` (1900 até o ano que vem — barra 1800/3050). A tela aplica máscara no
+   `on_change` da placa, só-dígitos no ano, e valida no salvar.
+4. **Dropdown de Cliente com busca:** `enable_filter=True` + `hint_text` (mesmo padrão já usado em
+   Comandas/Agendamentos) — digita o nome pra filtrar em vez de rolar centenas.
 
-**Fase 2 — "raio-x do carro"**
+**🔜 Fase 2 — "raio-x do carro" (próxima)**
 5. **WhatsApp na linha do veículo** (faz mais sentido aqui que em Clientes: a mensagem
    "seu Fiat Toro (ABC-1234) está pronto" nasce com placa + dono na mão).
 6. **Coluna "Última lavagem"** na tabela (hoje só abrindo o histórico).
