@@ -95,6 +95,22 @@ def mascara_data(texto):
     return f"{d[:2]}/{d[2:4]}/{d[4:]}"
 
 
+def mascara_placa(texto):
+    """
+    Arruma a placa enquanto o usuário digita: deixa só letras/números, sobe pra
+    maiúsculo e limita a 7 caracteres.
+        'abc1234'  -> 'ABC-1234'   (padrão antigo: 3 letras + 4 números -> ganha traço)
+        'abc1d23'  -> 'ABC1D23'    (padrão Mercosul: sem traço)
+    Enquanto ainda não dá pra saber o formato (poucos caracteres), só devolve
+    o texto limpo e em maiúsculo, sem inventar traço.
+    """
+    s = re.sub(r"[^A-Za-z0-9]", "", texto or "").upper()[:7]
+    # Formato antigo: depois das 3 primeiras posições vem SÓ número -> ABC-1234.
+    if len(s) > 3 and s[3:].isdigit():
+        return s[:3] + "-" + s[3:]
+    return s   # Mercosul (ABC1D23) ou digitação ainda incompleta
+
+
 # ================================================================
 # Datas (texto brasileiro <-> date do Python)
 # ================================================================
@@ -208,6 +224,38 @@ def validar_telefone(telefone):
     return len(d) in (10, 11)
 
 
+def validar_placa(placa):
+    """
+    True se a placa for do padrão antigo (ABC-1234) ou Mercosul (ABC1D23).
+    O traço e espaços são ignorados na conferência — 'ABC-1234' e 'ABC1234'
+    valem igual. Vazio é considerado VÁLIDO (quem exige a placa é a tela).
+
+        antigo   : 3 letras + 4 números          -> ABC1234
+        Mercosul : 3 letras + número + letra + 2 números -> ABC1D23
+    """
+    s = re.sub(r"[^A-Za-z0-9]", "", placa or "").upper()
+    if not s:
+        return True
+    antigo = re.match(r"^[A-Z]{3}[0-9]{4}$", s)
+    mercosul = re.match(r"^[A-Z]{3}[0-9][A-Z][0-9]{2}$", s)
+    return bool(antigo or mercosul)
+
+
+def validar_ano_veiculo(ano):
+    """
+    True se o ano do veículo estiver numa faixa razoável: de 1900 até o ano que
+    vem (concessionária vende o modelo do próximo ano). Assim '1800' e '3050'
+    são barrados. Vazio é válido (campo opcional).
+    """
+    if ano in (None, ""):
+        return True
+    try:
+        a = int(ano)
+    except (TypeError, ValueError):
+        return False
+    return 1900 <= a <= date.today().year + 1
+
+
 # ================================================================
 # TESTE RÁPIDO (python validadores.py)
 # ================================================================
@@ -218,6 +266,8 @@ if __name__ == "__main__":
     print(" Celular:", mascara_telefone("47999990000"))
     print(" Fixo  :", mascara_telefone("4733334444"))
     print(" Data  :", mascara_data("25121990"))
+    print(" Placa antiga :", mascara_placa("abc1234"))
+    print(" Placa Mercosul:", mascara_placa("abc1d23"))
 
     print("\n— Validações (esperado: True, False, True, False) —")
     print(" CPF válido   :", validar_cpf("529.982.247-25"))
@@ -228,6 +278,16 @@ if __name__ == "__main__":
     print("\n— E-mail (esperado: True, False) —")
     print(" ok    :", validar_email("joao@gmail.com"))
     print(" errado:", validar_email("joao@gmail"))
+
+    print("\n— Placa (esperado: True, True, False) —")
+    print(" antiga  :", validar_placa("ABC-1234"))
+    print(" Mercosul:", validar_placa("ABC1D23"))
+    print(" errada  :", validar_placa("AB12"))
+
+    print("\n— Ano do veículo (esperado: True, False, False) —")
+    print(" 2015:", validar_ano_veiculo(2015))
+    print(" 1800:", validar_ano_veiculo(1800))
+    print(" 3050:", validar_ano_veiculo(3050))
 
     nasc = parse_data_br("25/12/1990")
     print("\n— Data —")
