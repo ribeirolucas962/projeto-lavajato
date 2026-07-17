@@ -133,6 +133,39 @@ def registrar_saida(valor, descricao=None, id_despesa=None):
     return _registrar_movimento('saida', valor, descricao, None, id_despesa)
 
 
+def total_entradas_da_ordem(id_ordem):
+    """
+    Soma tudo que JÁ entrou no caixa para uma comanda (em qualquer caixa,
+    aberto ou fechado). Usado pela tela de Comandas ao salvar o pagamento:
+    lança só a DIFERENÇA para o valor pago, evitando entrada duplicada
+    quando o pagamento é salvo mais de uma vez.
+    Retorna Decimal (0 se nada lançado), ou None em caso de erro.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT COALESCE(SUM(valor), 0)
+            FROM caixa_movimento
+            WHERE id_ordem = %s AND tipo = 'entrada';
+            """,
+            (id_ordem,)
+        )
+        return cursor.fetchone()[0]
+
+    except Exception as erro:
+        print(f"Erro ao somar entradas da comanda no caixa: {erro}")
+        return None
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
 def saldo_esperado(id_caixa=None):
     """
     Calcula o saldo esperado do caixa: valor_inicial + entradas - saídas.

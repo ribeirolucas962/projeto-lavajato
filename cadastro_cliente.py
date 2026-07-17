@@ -34,6 +34,8 @@ Além do CRUD, este módulo traz as consultas que dão INTELIGÊNCIA ao cadastro
   possiveis_duplicados()-> evita cadastrar o mesmo cliente duas vezes
 """
 
+import psycopg2
+
 from conexao import conectar
 
 # Sentinela do update parcial. Precisamos distinguir três intenções:
@@ -287,6 +289,43 @@ def reativar_cliente(id_cliente):
 
     except Exception as erro:
         print(f"Erro ao reativar cliente: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def excluir_cliente(id_cliente):
+    """
+    Exclui o cliente DE VEZ (DELETE) — só para cadastro criado errado
+    (teste, duplicado), SEM nada vinculado. Se o cliente tiver qualquer
+    histórico (veículo, comanda, agendamento, fidelidade, assinatura),
+    o banco BLOQUEIA a exclusão (FKs sem CASCADE) e devolvemos 'vinculos'
+    — nesse caso o caminho certo é desativar (soft delete).
+    Retorna: True = excluído | 'vinculos' = tem histórico | False = erro/não achou.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            "DELETE FROM cliente WHERE id_cliente = %s;",
+            (id_cliente,)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except psycopg2.errors.ForeignKeyViolation:
+        # Alguma tabela ainda aponta para este cliente — histórico existe.
+        conexao.rollback()
+        return 'vinculos'
+
+    except Exception as erro:
+        print(f"Erro ao excluir cliente: {erro}")
         conexao.rollback()
         return False
 
