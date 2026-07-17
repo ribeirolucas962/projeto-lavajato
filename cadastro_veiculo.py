@@ -8,11 +8,19 @@ Cada veículo pertence a um cliente (id_cliente) e a uma categoria de porte
 (id_categoria, FK para a tabela categoria_veiculo).
 
 Segue o mesmo padrão do cadastro_cliente.py (transação try/commit/rollback/finally,
-%s parametrizado, COALESCE no update, soft delete). Veja lá os comentários do padrão;
-aqui só comentamos o que é próprio de veículo (JOINs e a ordem das colunas).
+%s parametrizado, sentinela MANTER no update — ver editar_veiculo, soft delete). Veja
+lá os comentários do padrão; aqui só comentamos o que é próprio de veículo (JOINs e a
+ordem das colunas).
 """
 
+import psycopg2
+
 from conexao import conectar
+
+# Sentinela do editar_veiculo (mesma ideia do cadastro_cliente.py):
+# campo NÃO passado = mantém como está; campo passado como None = apaga (grava NULL).
+# O COALESCE antigo tornava impossível apagar cor/marca/modelo/ano — ver editar_veiculo.
+MANTER = object()
 
 
 def listar_categorias():
@@ -160,6 +168,52 @@ def buscar_veiculo_por_id(id_veiculo):
         conexao.close()
 
 
+def buscar_veiculo_por_placa(placa):
+    """
+    Procura um veículo pela placa EXATA (ignora maiúsc/minúsc e o traço, então
+    'abc1234' acha 'ABC-1234'). Serve pra avisar, ANTES de tentar cadastrar, que
+    a placa já existe e de quem é o carro — a coluna veiculo.placa é UNIQUE, então
+    o banco recusaria o INSERT de qualquer jeito; melhor avisar com jeitinho.
+
+    Traz também veículos inativos (a placa continua ocupada mesmo desativada).
+    Retorna a tupla (id_veiculo, placa, marca, modelo, cliente_nome, ativo),
+    ou None se ninguém usa essa placa.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    # Normaliza dos dois lados (banco e busca): só letras/números, em maiúsculo.
+    # REPLACE tira o traço da placa gravada; UPPER cuida do caixa. Assim 'ABC-1234'
+    # no banco casa com 'abc1234' digitado.
+    import re
+    placa_limpa = re.sub(r"[^A-Za-z0-9]", "", placa or "").upper()
+    if not placa_limpa:
+        conexao.close()
+        return None
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT v.id_veiculo, v.placa, v.marca, v.modelo, c.nome, v.ativo
+            FROM veiculo v
+            JOIN cliente c ON c.id_cliente = v.id_cliente
+            WHERE UPPER(REPLACE(v.placa, '-', '')) = %s;
+            """,
+            (placa_limpa,)
+        )
+        return cursor.fetchone()
+
+    except Exception as erro:
+        print(f"Erro ao buscar veículo por placa: {erro}")
+        return None
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
 def buscar_veiculos_por_cliente(id_cliente, apenas_ativos=True):
     """
     Lista todos os veículos de um cliente específico.
@@ -198,33 +252,60 @@ def buscar_veiculos_por_cliente(id_cliente, apenas_ativos=True):
         conexao.close()
 
 
-def editar_veiculo(id_veiculo, id_cliente=None, id_categoria=None, placa=None,
-                   marca=None, modelo=None, ano=None, cor=None):
+def editar_veiculo(id_veiculo, id_cliente=MANTER, id_categoria=MANTER, placa=MANTER,
+                   marca=MANTER, modelo=MANTER, ano=MANTER, cor=MANTER):
     """
     Atualiza os dados de um veículo existente.
-    Apenas os campos informados (diferentes de None) são atualizados.
-    Retorna True se a atualização foi bem-sucedida, False caso contrário.
+
+    Campo que você NÃO passar fica como está (o padrão é o sentinela MANTER).
+    Campo passado como None é APAGADO (vira NULL no banco). Era isso que o COALESCE
+    antigo impedia: limpar a cor/marca/modelo/ano e salvar trazia o valor velho de
+    volta — mesmo bug já corrigido no cadastro_cliente.py.
+
+    Exceções (colunas NOT NULL / obrigatórias no banco): id_cliente, id_categoria e
+    placa não podem virar NULL. Se vierem vazios/None, são simplesmente ignorados
+    (em vez de estourar erro no Postgres).
+
+    Retorna True se alguma linha foi atualizada, False caso contrário.
     """
     conexao = conectar()
     if not conexao:
         return False
 
+    # Monta o SET dinamicamente: só entram na query os campos realmente enviados.
+    # Os NOMES das colunas vêm daqui de dentro (nunca do usuário) e os VALORES seguem
+    # como %s — continua sem risco de SQL injection.
+    campos = {
+        "id_cliente": id_cliente,
+        "id_categoria": id_categoria,
+        "placa": placa,
+        "marca": marca,
+        "modelo": modelo,
+        "ano": ano,
+        "cor": cor,
+    }
+    obrigatorios = ("id_cliente", "id_categoria", "placa")   # NOT NULL: nunca apagam
+    partes, valores = [], []
+    for coluna, valor in campos.items():
+        if valor is MANTER:
+            continue                                 # não foi enviado -> não mexe
+        if coluna in obrigatorios and not valor:
+            continue                                 # obrigatório vazio -> ignora
+        partes.append(f"{coluna} = %s")
+        valores.append(valor)
+
+    if not partes:
+        conexao.close()
+        return False   # ninguém pediu mudança nenhuma
+
+    partes.append("atualizado_em = NOW()")
+    valores.append(id_veiculo)
+
     try:
         cursor = conexao.cursor()
         cursor.execute(
-            """
-            UPDATE veiculo
-            SET id_cliente = COALESCE(%s, id_cliente),
-                id_categoria = COALESCE(%s, id_categoria),
-                placa = COALESCE(%s, placa),
-                marca = COALESCE(%s, marca),
-                modelo = COALESCE(%s, modelo),
-                ano = COALESCE(%s, ano),
-                cor = COALESCE(%s, cor),
-                atualizado_em = NOW()
-            WHERE id_veiculo = %s;
-            """,
-            (id_cliente, id_categoria, placa, marca, modelo, ano, cor, id_veiculo)
+            f"UPDATE veiculo SET {', '.join(partes)} WHERE id_veiculo = %s;",
+            valores
         )
         conexao.commit()
         return cursor.rowcount > 0
@@ -286,6 +367,42 @@ def reativar_veiculo(id_veiculo):
 
     except Exception as erro:
         print(f"Erro ao reativar veículo: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def excluir_veiculo(id_veiculo):
+    """
+    Exclui o veículo DE VEZ (DELETE) — só para cadastro criado errado
+    (teste, duplicado), SEM nada vinculado. Se o veículo tiver histórico
+    (comanda ou agendamento), o banco BLOQUEIA a exclusão (FKs sem CASCADE)
+    e devolvemos 'vinculos' — nesse caso o caminho certo é desativar.
+    Retorna: True = excluído | 'vinculos' = tem histórico | False = erro/não achou.
+    """
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            "DELETE FROM veiculo WHERE id_veiculo = %s;",
+            (id_veiculo,)
+        )
+        conexao.commit()
+        return cursor.rowcount > 0
+
+    except psycopg2.errors.ForeignKeyViolation:
+        # Alguma comanda/agendamento ainda aponta para este veículo.
+        conexao.rollback()
+        return 'vinculos'
+
+    except Exception as erro:
+        print(f"Erro ao excluir veículo: {erro}")
         conexao.rollback()
         return False
 
