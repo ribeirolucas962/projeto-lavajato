@@ -883,6 +883,9 @@ def main(page: ft.Page):
                     ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
                                   on_click=lambda e, cc=c: form_cliente(cc)),
                     acao,
+                    ft.IconButton(ft.Icons.DELETE_FOREVER, icon_color=ft.Colors.RED_700,
+                                  tooltip="Excluir de vez (só cadastro sem histórico)",
+                                  on_click=lambda e, i=idc, n=nome: confirmar_excluir(i, n)),
                 ])))
                 linhas.append(ft.DataRow(cells=celulas))
 
@@ -968,6 +971,38 @@ def main(page: ft.Page):
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Desativar", on_click=sim,
                                     style=ft.ButtonStyle(bgcolor=ft.Colors.RED_500)),
+                ],
+            ))
+
+        def confirmar_excluir(idc, nome):
+            # DELETE de verdade — só para cadastro criado errado (teste/duplicado),
+            # sem nada vinculado. Com histórico, o banco bloqueia (FKs sem CASCADE)
+            # e o excluir_cliente devolve 'vinculos' — orientamos usar o Desativar.
+            def sim(e):
+                res = mod_cli.excluir_cliente(idc)
+                fechar_dialog()
+                atualizar()
+                if res is True:
+                    sucesso("Cliente excluído do banco.")
+                elif res == 'vinculos':
+                    aviso("Não dá para excluir",
+                          f"{nome} tem histórico no sistema (veículo, comanda, "
+                          "agendamento, fidelidade ou assinatura) — nada foi apagado. "
+                          "Para tirar das listas sem perder o histórico, use o "
+                          "Desativar (ícone de bloqueio).")
+                else:
+                    falha("Não foi possível excluir. Verifique a conexão com o banco.")
+            abrir_dialog(ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Excluir cliente DE VEZ"),
+                content=ft.Text(
+                    f"Apagar '{nome}' do banco para sempre? Essa ação NÃO tem volta.\n\n"
+                    "Só funciona para cadastro sem histórico (criado errado ou de "
+                    "teste). Se houver qualquer vínculo, nada é apagado."),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
+                    ft.FilledButton("Excluir de vez", on_click=sim,
+                                    style=ft.ButtonStyle(bgcolor=ft.Colors.RED_700)),
                 ],
             ))
 
@@ -1754,12 +1789,62 @@ def main(page: ft.Page):
                     rotulo, disabled=finalizada or status == novo,
                     on_click=lambda e: (mod_os.alterar_status(id_ordem, novo), refrescar()),
                     style=ft.ButtonStyle(color=cor))
-            linha_status = ft.Row(wrap=True, spacing=8, controls=[
+            # Reabrir comanda travada (entregue/cancelada) para CORREÇÃO.
+            # Entregue volta a 'finalizado' (continua valendo no faturamento, só
+            # destrava a edição); cancelada volta a 'em_execucao' (retorna ao fluxo).
+            # Os horários originais não mudam: alterar_status só grava inicio_em/
+            # finalizacao_em na primeira vez que entra no status.
+            def confirmar_reabrir(e):
+                novo = 'finalizado' if status == 'entregue' else 'em_execucao'
+                rotulo_novo = 'Finalizado' if novo == 'finalizado' else 'Em execução'
+
+                # ⚠️ Um diálogo por vez: fecha o detalhe ANTES de abrir a confirmação.
+                # Dois pop_dialog no mesmo clique dessincronizam o Flet do Flutter
+                # (o pop só marca open=False; a remoção real vem depois da animação)
+                # e deixam um diálogo "fantasma" preso na tela, impossível de fechar.
+                fechar_dialog()
+
+                def sim(e):
+                    ok = mod_os.alterar_status(id_ordem, novo)
+                    fechar_dialog()   # fecha a confirmação
+                    atualizar()
+                    if ok:
+                        abrir_detalhe(id_ordem)   # reabre já destravado
+                    else:
+                        falha("Não foi possível reabrir. Verifique a conexão com o banco.")
+
+                def cancelar(e):
+                    fechar_dialog()
+                    abrir_detalhe(id_ordem)   # volta ao detalhe como estava
+
+                abrir_dialog(ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("Reabrir comanda para correção"),
+                    content=ft.Text(
+                        f"A comanda #{id_ordem} volta ao status '{rotulo_novo}' e "
+                        "poderá ser editada (serviços, vistoria, pagamento). "
+                        "Depois de corrigir, marque como Entregue de novo.\n\n"
+                        "Se mudar o valor pago, o caixa é ajustado ao salvar o "
+                        "pagamento (entra a diferença; se pagou a menos, o aviso "
+                        "orienta a registrar a saída)."),
+                    actions=[
+                        ft.TextButton("Cancelar", on_click=cancelar),
+                        ft.FilledButton("Reabrir", on_click=sim,
+                                        style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE_700)),
+                    ]))
+
+            controles_status = [
                 botao_status("Em execução", "em_execucao", ft.Colors.BLUE_700),
                 botao_status("Finalizado", "finalizado", ft.Colors.GREEN_700),
                 botao_status("Entregue", "entregue", ft.Colors.TEAL_700),
                 botao_status("Cancelar", "cancelado", ft.Colors.RED_600),
-            ])
+            ]
+            if finalizada:
+                controles_status.append(ft.FilledButton(
+                    "Reabrir p/ correção", icon=ft.Icons.LOCK_OPEN,
+                    on_click=confirmar_reabrir,
+                    style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE_700)))
+            linha_status = ft.Row(wrap=True, spacing=8, controls=controles_status)
 
             # ----- Vistoria de entrada / Observações -----
             # 'avarias' = danos do veículo observados na chegada (protege o lava-jato de
@@ -1863,14 +1948,56 @@ def main(page: ft.Page):
                         valor_pago=num(f_pago),
                         data_pagamento=(f_dpag.value or '').strip() or None,
                         data_vencimento=(f_venc.value or '').strip() or None)
-                    # Sucesso: o refrescar() reabre a comanda com o status de pagamento
-                    # já atualizado (Pago/Parcial/Pendente) — esse é o retorno visível.
                     # Falha: aviso modal por cima do form, para o operador poder repetir.
-                    if ok:
-                        refrescar()
-                    else:
+                    if not ok:
                         aviso("Erro", "Não foi possível salvar o pagamento. "
                                       "Verifique a conexão com o banco.")
+                        return
+
+                    # ----- Integração com o Caixa -----
+                    # Lança no caixa aberto a DIFERENÇA entre o valor pago agora e o que
+                    # esta comanda já lançou antes (soma de caixa_movimento por id_ordem).
+                    # Salvar de novo não duplica; pagar o resto lança só o resto.
+                    msg_caixa = None   # (titulo, texto) mostrado por cima do detalhe
+                    ja_lancado = mod_caixa.total_entradas_da_ordem(id_ordem)
+                    if ja_lancado is None:
+                        msg_caixa = ("Atenção",
+                                     "Pagamento salvo, mas não deu para consultar o "
+                                     "caixa. Confira a tela Caixa e lance a entrada "
+                                     "manualmente se for preciso.")
+                    else:
+                        delta = round(num(f_pago) - float(ja_lancado), 2)
+                        if delta > 0:
+                            if not mod_caixa.caixa_aberto():
+                                msg_caixa = ("Caixa fechado",
+                                             f"Pagamento salvo, mas {brl(delta)} NÃO "
+                                             "entrou no caixa: não há caixa aberto. "
+                                             "Abra o caixa e salve o pagamento de novo "
+                                             "para lançar a entrada.")
+                            elif mod_caixa.registrar_entrada(
+                                    delta,
+                                    f"Comanda #{id_ordem} — {cli_nome} ({placa})",
+                                    id_ordem=id_ordem):
+                                msg_caixa = ("Pagamento salvo",
+                                             f"Entrada de {brl(delta)} lançada no caixa.")
+                            else:
+                                msg_caixa = ("Atenção",
+                                             "Pagamento salvo, mas a entrada não foi "
+                                             "lançada no caixa. Lance manualmente na "
+                                             "tela Caixa.")
+                        elif delta < 0:
+                            msg_caixa = ("Atenção",
+                                         f"O caixa já tem {brl(float(ja_lancado))} "
+                                         "lançado desta comanda — mais que o valor pago "
+                                         "informado. Se for correção, registre uma "
+                                         "saída na tela Caixa.")
+
+                    # Sucesso: o refrescar() reabre a comanda com o status de pagamento
+                    # já atualizado (Pago/Parcial/Pendente); o aviso do caixa (se houver)
+                    # entra por cima do detalhe reaberto.
+                    refrescar()
+                    if msg_caixa:
+                        aviso(*msg_caixa)
 
                 abrir_dialog(ft.AlertDialog(
                     modal=True, title_padding=0,
@@ -2366,6 +2493,9 @@ def main(page: ft.Page):
                         ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
                                       on_click=lambda e, vv=v: form_veiculo(vv)),
                         acao,
+                        ft.IconButton(ft.Icons.DELETE_FOREVER, icon_color=ft.Colors.RED_700,
+                                      tooltip="Excluir de vez (só cadastro sem histórico)",
+                                      on_click=lambda e, i=idv, p=placa: confirmar_excluir(i, p)),
                     ])),
                 ]))
             return ft.DataTable(
@@ -2408,6 +2538,37 @@ def main(page: ft.Page):
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Desativar", on_click=sim,
                                     style=ft.ButtonStyle(bgcolor=ft.Colors.RED_500)),
+                ],
+            ))
+
+        def confirmar_excluir(idv, placa):
+            # DELETE de verdade — só para cadastro criado errado (teste/duplicado),
+            # sem nada vinculado. Com histórico, o banco bloqueia (FKs sem CASCADE)
+            # e o excluir_veiculo devolve 'vinculos' — orientamos usar o Desativar.
+            def sim(e):
+                res = mod_veic.excluir_veiculo(idv)
+                fechar_dialog()
+                atualizar()
+                if res is True:
+                    sucesso("Veículo excluído do banco.")
+                elif res == 'vinculos':
+                    aviso("Não dá para excluir",
+                          f"O veículo {placa} tem histórico no sistema (comanda ou "
+                          "agendamento) — nada foi apagado. Para tirar das listas "
+                          "sem perder o histórico, use o Desativar (ícone de bloqueio).")
+                else:
+                    falha("Não foi possível excluir. Verifique a conexão com o banco.")
+            abrir_dialog(ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Excluir veículo DE VEZ"),
+                content=ft.Text(
+                    f"Apagar o veículo {placa} do banco para sempre? Essa ação NÃO "
+                    "tem volta.\n\nSó funciona para cadastro sem histórico (criado "
+                    "errado ou de teste). Se houver qualquer vínculo, nada é apagado."),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
+                    ft.FilledButton("Excluir de vez", on_click=sim,
+                                    style=ft.ButtonStyle(bgcolor=ft.Colors.RED_700)),
                 ],
             ))
 
@@ -2471,6 +2632,10 @@ def main(page: ft.Page):
 
             dd_cliente = ft.Dropdown(
                 label="Cliente *", width=420,
+                # enable_filter: dá pra digitar o nome pra filtrar, em vez de rolar a lista
+                # inteira (inviável com centenas de clientes). Mesmo padrão das telas de
+                # Comandas e Agendamentos.
+                hint_text="Busque pelo nome do cliente", enable_filter=True,
                 options=[ft.dropdown.Option(key=str(c[0]), text=c[1]) for c in clientes],
                 value=str(veiculo[1]) if editando else None,
             )
@@ -2487,6 +2652,21 @@ def main(page: ft.Page):
             f_cor = ft.TextField(label="Cor", value=(veiculo[9] or "") if editando else "", width=200)
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
+            # Máscaras: a placa se formata sozinha (ABC-1234 / ABC1D23) e o ano
+            # só aceita números (no máx. 4). Ao digitar, o aviso de erro some.
+            def mascara_placa_campo(e):
+                f_placa.value = val.mascara_placa(f_placa.value)
+                erro_form.value = ""
+                page.update()
+
+            def so_digitos_ano(e):
+                f_ano.value = val.so_digitos(f_ano.value)[:4]
+                erro_form.value = ""
+                page.update()
+
+            f_placa.on_change = mascara_placa_campo
+            f_ano.on_change = so_digitos_ano
+
             def salvar(e):
                 k_cli = dd_key(dd_cliente)
                 k_cat = dd_key(dd_categoria)
@@ -2496,18 +2676,36 @@ def main(page: ft.Page):
                 if not k_cat:
                     erro_form.value = "Selecione o porte."
                     page.update(); return
-                if not (f_placa.value or "").strip():
+                placa_fmt = val.mascara_placa(f_placa.value or "")
+                if not placa_fmt:
                     erro_form.value = "A placa é obrigatória."
                     page.update(); return
+                if not val.validar_placa(placa_fmt):
+                    erro_form.value = "Placa inválida. Use ABC-1234 (antiga) ou ABC1D23 (Mercosul)."
+                    page.update(); return
                 ano_txt = (f_ano.value or "").strip()
-                if ano_txt and not ano_txt.isdigit():
-                    erro_form.value = "Ano deve ser um número (ex.: 2015)."
+                if ano_txt and not val.validar_ano_veiculo(ano_txt):
+                    erro_form.value = "Ano fora da faixa válida (1900 até o ano que vem)."
                     page.update(); return
                 ano_val = int(ano_txt) if ano_txt else None
+
+                # Anti-duplicidade da placa (item 1 do backlog): a coluna é UNIQUE, então
+                # o banco recusaria dois iguais. Em vez de deixar o INSERT falhar e mostrar
+                # "verifique a conexão" (mentira), avisamos ANTES de quem é a placa.
+                # No modo edição, ignora o próprio veículo (a placa dele já é dele).
+                existente = mod_veic.buscar_veiculo_por_placa(placa_fmt)
+                if existente and (not editando or existente[0] != veiculo[0]):
+                    (_id, _pl, ex_marca, ex_modelo, ex_dono, ex_ativo) = existente
+                    ex_desc = " ".join(p for p in [ex_marca, ex_modelo] if p) or "veículo"
+                    situacao = "" if ex_ativo else " (inativo)"
+                    erro_form.value = (f"Placa {placa_fmt} já cadastrada: "
+                                       f"{ex_desc} do cliente {ex_dono}{situacao}.")
+                    page.update(); return
+
                 vals = dict(
                     id_cliente=int(k_cli),
                     id_categoria=int(k_cat),
-                    placa=f_placa.value.strip().upper(),
+                    placa=placa_fmt,
                     marca=(f_marca.value or "").strip() or None,
                     modelo=(f_modelo.value or "").strip() or None,
                     ano=ano_val,
