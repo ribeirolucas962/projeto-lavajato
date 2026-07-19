@@ -44,7 +44,7 @@ PADRÃO DE CADA TELA (pagina_*): todas seguem a MESMA receita, então entender u
 import os
 import csv
 import webbrowser        # abre o WhatsApp no navegador (ver menu_whatsapp)
-from datetime import datetime
+from datetime import datetime, timedelta
 import flet as ft
 
 import funcionario as mod_func
@@ -362,11 +362,13 @@ def main(page: ft.Page):
         "cobranca": (ft.Icons.PAYMENTS, ft.Colors.AMBER_800),
     }
 
-    def menu_whatsapp(id_cliente, nome, telefone, sugerido=None):
+    def menu_whatsapp(id_cliente, nome, telefone, sugerido=None, veiculo_pref=None):
         """
         Diálogo com as mensagens prontas. Clicou no modelo -> abre o WhatsApp.
         'sugerido' destaca o modelo mais provável naquele contexto (ex.: na lista
         de aniversariantes, "Feliz aniversário" vem primeiro).
+        'veiculo_pref' é uma PLACA: quando o clique veio da tela de Veículos, o
+        carro daquela linha já vem selecionado no dropdown (em vez do primeiro).
         """
         if not wpp.normalizar_numero(telefone):
             falha("Este cliente não tem um telefone válido cadastrado.")
@@ -383,10 +385,17 @@ def main(page: ft.Page):
 
         # Sem veículo cadastrado, a mensagem cai no genérico "seu veículo".
         opcoes_veic = [descricao_veiculo(v) for v in veiculos]
+        valor_inicial = opcoes_veic[0] if opcoes_veic else None
+        if veiculo_pref:
+            # A descrição termina em "(PLACA)" — é por ela que achamos o carro certo.
+            for d in opcoes_veic:
+                if f"({veiculo_pref})" in d:
+                    valor_inicial = d
+                    break
         dd_veic = ft.Dropdown(
             label="Veículo (usado na mensagem)", width=420,
             options=[ft.dropdown.Option(key=d, text=d) for d in opcoes_veic],
-            value=opcoes_veic[0] if opcoes_veic else None,
+            value=valor_inicial,
             visible=bool(opcoes_veic),
         )
 
@@ -449,7 +458,7 @@ def main(page: ft.Page):
             actions=[ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog())],
         ))
 
-    def botao_whatsapp(id_cliente, nome, telefone, sugerido=None):
+    def botao_whatsapp(id_cliente, nome, telefone, sugerido=None, veiculo_pref=None):
         """Ícone verde do WhatsApp. Fica apagado se o cliente não tem telefone."""
         valido = bool(wpp.normalizar_numero(telefone))
         return ft.IconButton(
@@ -457,8 +466,147 @@ def main(page: ft.Page):
             icon_color=ft.Colors.GREEN_600 if valido else ft.Colors.GREY_400,
             tooltip="Mandar WhatsApp" if valido else "Sem telefone cadastrado",
             disabled=not valido,
-            on_click=lambda e: menu_whatsapp(id_cliente, nome, telefone, sugerido),
+            on_click=lambda e: menu_whatsapp(id_cliente, nome, telefone, sugerido,
+                                             veiculo_pref),
         )
+
+    # ------------------------------------------------------------
+    # Formulário de veículo — COMPARTILHADO entre a tela de Veículos
+    # e a ficha do cliente (botão "Novo veículo" com o dono já escolhido).
+    # Por isso vive aqui no escopo do main(), e não dentro de pagina_veiculos().
+    # ------------------------------------------------------------
+    def form_veiculo(veiculo=None, cliente_fixo=None, ao_salvar=None):
+        """
+        Diálogo de cadastro/edição de veículo.
+          veiculo      -> tupla de buscar_veiculos() para EDITAR; None para criar.
+          cliente_fixo -> id do cliente, vindo da ficha do cliente: o dono já
+                          aparece selecionado no dropdown (dá pra trocar se quiser).
+          ao_salvar    -> chamado depois de salvar com sucesso (a tela de Veículos
+                          passa o atualizar() dela; a ficha reabre a si mesma).
+        """
+        editando = veiculo is not None
+        clientes = mod_cli.buscar_clientes()
+        categorias = mod_veic.listar_categorias()
+
+        if editando:
+            cliente_inicial = str(veiculo[1])
+        elif cliente_fixo:
+            cliente_inicial = str(cliente_fixo)
+        else:
+            cliente_inicial = None
+
+        dd_cliente = ft.Dropdown(
+            label="Cliente *", width=420,
+            # enable_filter: dá pra digitar o nome pra filtrar, em vez de rolar a lista
+            # inteira (inviável com centenas de clientes). Mesmo padrão das telas de
+            # Comandas e Agendamentos.
+            hint_text="Busque pelo nome do cliente", enable_filter=True,
+            options=[ft.dropdown.Option(key=str(c[0]), text=c[1]) for c in clientes],
+            value=cliente_inicial,
+        )
+        dd_categoria = ft.Dropdown(
+            label="Porte *", width=200,
+            options=[ft.dropdown.Option(key=str(cat[0]), text=cat[1]) for cat in categorias],
+            value=str(veiculo[3]) if editando else None,
+        )
+        f_placa = ft.TextField(label="Placa *", value=veiculo[5] if editando else "", width=200)
+        f_marca = ft.TextField(label="Marca", value=(veiculo[6] or "") if editando else "", width=200)
+        f_modelo = ft.TextField(label="Modelo", value=(veiculo[7] or "") if editando else "", width=200)
+        f_ano = ft.TextField(label="Ano", width=120,
+                             value=(str(veiculo[8]) if editando and veiculo[8] else ""))
+        f_cor = ft.TextField(label="Cor", value=(veiculo[9] or "") if editando else "", width=200)
+        erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+        # Máscaras: a placa se formata sozinha (ABC-1234 / ABC1D23) e o ano
+        # só aceita números (no máx. 4). Ao digitar, o aviso de erro some.
+        def mascara_placa_campo(e):
+            f_placa.value = val.mascara_placa(f_placa.value)
+            erro_form.value = ""
+            page.update()
+
+        def so_digitos_ano(e):
+            f_ano.value = val.so_digitos(f_ano.value)[:4]
+            erro_form.value = ""
+            page.update()
+
+        f_placa.on_change = mascara_placa_campo
+        f_ano.on_change = so_digitos_ano
+
+        def salvar(e):
+            k_cli = dd_key(dd_cliente)
+            k_cat = dd_key(dd_categoria)
+            if not k_cli:
+                erro_form.value = "Selecione o cliente."
+                page.update(); return
+            if not k_cat:
+                erro_form.value = "Selecione o porte."
+                page.update(); return
+            placa_fmt = val.mascara_placa(f_placa.value or "")
+            if not placa_fmt:
+                erro_form.value = "A placa é obrigatória."
+                page.update(); return
+            if not val.validar_placa(placa_fmt):
+                erro_form.value = "Placa inválida. Use ABC-1234 (antiga) ou ABC1D23 (Mercosul)."
+                page.update(); return
+            ano_txt = (f_ano.value or "").strip()
+            if ano_txt and not val.validar_ano_veiculo(ano_txt):
+                erro_form.value = "Ano fora da faixa válida (1900 até o ano que vem)."
+                page.update(); return
+            ano_val = int(ano_txt) if ano_txt else None
+
+            # Anti-duplicidade da placa (item 1 do backlog): a coluna é UNIQUE, então
+            # o banco recusaria dois iguais. Em vez de deixar o INSERT falhar e mostrar
+            # "verifique a conexão" (mentira), avisamos ANTES de quem é a placa.
+            # No modo edição, ignora o próprio veículo (a placa dele já é dele).
+            existente = mod_veic.buscar_veiculo_por_placa(placa_fmt)
+            if existente and (not editando or existente[0] != veiculo[0]):
+                (_id, _pl, ex_marca, ex_modelo, ex_dono, ex_ativo) = existente
+                ex_desc = " ".join(p for p in [ex_marca, ex_modelo] if p) or "veículo"
+                situacao = "" if ex_ativo else " (inativo)"
+                erro_form.value = (f"Placa {placa_fmt} já cadastrada: "
+                                   f"{ex_desc} do cliente {ex_dono}{situacao}.")
+                page.update(); return
+
+            vals = dict(
+                id_cliente=int(k_cli),
+                id_categoria=int(k_cat),
+                placa=placa_fmt,
+                marca=(f_marca.value or "").strip() or None,
+                modelo=(f_modelo.value or "").strip() or None,
+                ano=ano_val,
+                cor=(f_cor.value or "").strip() or None,
+            )
+            if editando:
+                ok = mod_veic.editar_veiculo(veiculo[0], **vals)
+            else:
+                ok = mod_veic.inserir_veiculo(**vals) is not None
+            fechar_dialog()
+            if ok:
+                if ao_salvar:
+                    ao_salvar()
+                sucesso("Veículo atualizado." if editando else "Veículo cadastrado.")
+            else:
+                aviso("Erro", "Não foi possível salvar. Verifique a conexão com o banco.")
+
+        abrir_dialog(ft.AlertDialog(
+            modal=True,
+            title_padding=0,
+            title=cabecalho_dialog(
+                "Editar veículo" if editando else "Novo veículo",
+                ft.Icons.DIRECTIONS_CAR),
+            content=ft.Container(width=460, content=ft.Column(tight=True, spacing=12, controls=[
+                dd_cliente,
+                ft.Row([dd_categoria, f_placa], spacing=20),
+                ft.Row([f_marca, f_modelo], spacing=20),
+                ft.Row([f_ano, f_cor], spacing=20),
+                erro_form,
+            ])),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
+                ft.FilledButton("Salvar", on_click=salvar,
+                                style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
+            ],
+        ))
 
     # ============================================================
     # TELA DE LOGIN
@@ -1078,7 +1226,7 @@ def main(page: ft.Page):
             # Veículos
             if f["veiculos"]:
                 # (id, placa, marca, modelo, ano, cor, categoria)
-                veic = ft.Column(spacing=4, controls=[
+                linhas_veic = [
                     ft.Row(spacing=8, controls=[
                         ft.Icon(ft.Icons.DIRECTIONS_CAR, size=16, color=COR_ACENTO),
                         ft.Text(f"{v[1]}", weight=ft.FontWeight.BOLD, size=13),
@@ -1086,9 +1234,20 @@ def main(page: ft.Page):
                                 size=12, color=ft.Colors.GREY_800),
                         ft.Text(f"· {v[6]}", size=11, color=ft.Colors.GREY_600),
                     ]) for v in f["veiculos"]
-                ])
+                ]
             else:
-                veic = ft.Text("Nenhum veículo cadastrado.", size=12, color=ft.Colors.GREY_500)
+                linhas_veic = [ft.Text("Nenhum veículo cadastrado.", size=12,
+                                       color=ft.Colors.GREY_500)]
+            # Cadastra o próximo carro sem sair daqui: o formulário compartilhado
+            # abre com o dono já selecionado e, ao salvar, a ficha reabre com o
+            # carro novo na lista. (Fecha a ficha ANTES de abrir o formulário —
+            # regra de um diálogo por vez do Flet 0.85.)
+            linhas_veic.append(ft.TextButton(
+                "Novo veículo deste cliente", icon=ft.Icons.ADD,
+                on_click=lambda e: (fechar_dialog(),
+                                    form_veiculo(cliente_fixo=idc,
+                                                 ao_salvar=lambda: abrir_ficha(idc)))))
+            veic = ft.Column(spacing=4, controls=linhas_veic)
 
             # Serviços preferidos (chips)
             if f["servicos"]:
@@ -2449,11 +2608,14 @@ def main(page: ft.Page):
         )
         mostrar_inativos = ft.Checkbox(label="Incluir inativos", value=False)
         corpo_tabela = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
+        # Guarda o que está na tela agora — usado pelo botão de exportar CSV.
+        visiveis = {"veiculos": []}
 
         def montar_linhas():
             termo = (campo_busca.value or "").strip() or None
             veiculos = mod_veic.buscar_veiculos(
                 termo=termo, apenas_ativos=not mostrar_inativos.value)
+            visiveis["veiculos"] = veiculos
             if not veiculos:
                 return ft.Container(
                     padding=30, alignment=ft.Alignment.CENTER,
@@ -2461,8 +2623,11 @@ def main(page: ft.Page):
             linhas = []
             for v in veiculos:
                 # Tupla = SELECT de cadastro_veiculo.buscar_veiculos() (já traz o nome
-                # do cliente e o nome do porte via JOIN, além dos ids idc/idcat).
-                (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor, ativo) = v
+                # do cliente e o nome do porte via JOIN, além dos ids idc/idcat; o
+                # telefone do dono e a última lavagem vêm no FIM, pra não deslocar
+                # os índices antigos).
+                (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo,
+                 ano, cor, ativo, telefone, ultima_lavagem) = v
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                     bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
@@ -2485,13 +2650,20 @@ def main(page: ft.Page):
                     ft.DataCell(ft.Text(veiculo_desc)),
                     ft.DataCell(ft.Text(str(ano) if ano else "—")),
                     ft.DataCell(ft.Text(cor or "—")),
+                    ft.DataCell(ft.Text(fmt_date(ultima_lavagem) if ultima_lavagem
+                                        else "nunca",
+                                        color=None if ultima_lavagem else ft.Colors.GREY_500)),
                     ft.DataCell(badge),
                     ft.DataCell(ft.Row(spacing=0, controls=[
-                        ft.IconButton(ft.Icons.HISTORY, icon_color=ft.Colors.GREY_600,
-                                      tooltip="Histórico de serviços",
-                                      on_click=lambda e, vv=v: ver_historico(vv)),
+                        # A mensagem nasce com o carro DESTA linha já escolhido
+                        # ("seu Fiat Uno (ABC-1234) está pronto").
+                        botao_whatsapp(idc, cli_nome, telefone,
+                                       sugerido="carro_pronto", veiculo_pref=placa),
+                        ft.IconButton(ft.Icons.ASSIGNMENT, icon_color=ft.Colors.INDIGO_400,
+                                      tooltip="Ficha do veículo (raio-x)",
+                                      on_click=lambda e, i=idv: abrir_ficha_veiculo(i)),
                         ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
-                                      on_click=lambda e, vv=v: form_veiculo(vv)),
+                                      on_click=lambda e, vv=v: form_veiculo(vv, ao_salvar=atualizar)),
                         acao,
                         ft.IconButton(ft.Icons.DELETE_FOREVER, icon_color=ft.Colors.RED_700,
                                       tooltip="Excluir de vez (só cadastro sem histórico)",
@@ -2508,6 +2680,7 @@ def main(page: ft.Page):
                     ft.DataColumn(ft.Text("Veículo")),
                     ft.DataColumn(ft.Text("Ano")),
                     ft.DataColumn(ft.Text("Cor")),
+                    ft.DataColumn(ft.Text("Última lavagem")),
                     ft.DataColumn(ft.Text("Status")),
                     ft.DataColumn(ft.Text("Ações")),
                 ],
@@ -2572,185 +2745,192 @@ def main(page: ft.Page):
                 ],
             ))
 
-        def ver_historico(veiculo):
-            (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor, ativo) = veiculo
-            comandas = mod_os.buscar_comandas(id_veiculo=idv)
-            veiculo_desc = " ".join(p for p in [marca, modelo] if p) or "—"
+        # ---------- FICHA DO VEÍCULO (raio-x do carro) ----------
+        # Substitui o antigo diálogo "Histórico": além das comandas, mostra os
+        # números do carro (visitas, gasto, ticket), os serviços que mais fazem
+        # nele e o histórico de AVARIAS das vistorias de entrada — o comprovante
+        # contra reclamação de dano pré-existente ("esse risco já estava aí").
+        def abrir_ficha_veiculo(id_veiculo):
+            f = mod_veic.ficha_veiculo(id_veiculo)
+            if not f:
+                falha("Não foi possível carregar a ficha. Verifique a conexão com o banco.")
+                return
 
-            if not comandas:
-                lista = ft.Container(
-                    content=ft.Text("Nenhuma comanda registrada para este veículo ainda.",
-                                    color=ft.Colors.GREY_500))
-            else:
-                linhas_hist = []
-                for c in comandas:
-                    (ido, _cli_nome, _placa, status, total, forma, entrada) = c
-                    linhas_hist.append(ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(f"#{ido}", weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(fmt_dt(entrada))),
-                        ft.DataCell(badge_status(status)),
-                        ft.DataCell(ft.Text(brl(total))),
-                        ft.DataCell(ft.Text(dict(FORMAS_PAGAMENTO).get(forma, forma or "—"))),
-                    ]))
-                tabela_hist = ft.DataTable(
-                    heading_row_color=ft.Colors.GREY_50,
-                    columns=[
-                        ft.DataColumn(ft.Text("Comanda")),
-                        ft.DataColumn(ft.Text("Entrada")),
-                        ft.DataColumn(ft.Text("Status")),
-                        ft.DataColumn(ft.Text("Total")),
-                        ft.DataColumn(ft.Text("Pagamento")),
-                    ],
-                    rows=linhas_hist,
+            (idv, placa, marca, modelo, ano, cor, categoria,
+             idc, dono, tel_dono, ativo) = f["veiculo"]
+            r = f["resumo"]
+            veiculo_desc = " ".join(p for p in [marca, modelo] if p) or "veículo"
+
+            def mini_card(titulo, valor, icone, cor_card):
+                return ft.Container(
+                    width=150, padding=12, bgcolor=ft.Colors.GREY_50, border_radius=10,
+                    content=ft.Column(spacing=2, controls=[
+                        ft.Row(spacing=6, controls=[
+                            ft.Icon(icone, size=16, color=cor_card),
+                            ft.Text(titulo, size=11, color=ft.Colors.GREY_700)]),
+                        ft.Text(str(valor), size=17, weight=ft.FontWeight.BOLD, color=cor_card),
+                    ]),
                 )
-                lista = ft.Container(
-                    height=320,
-                    content=ft.Column([tabela_hist], scroll=ft.ScrollMode.AUTO))
+
+            cards = ft.Row(wrap=True, spacing=10, run_spacing=10, controls=[
+                mini_card("Visitas", r["visitas"], ft.Icons.LOCAL_CAR_WASH, COR_PRIMARIA),
+                mini_card("Total gasto", brl(r["total_gasto"]), ft.Icons.PAYMENTS,
+                          ft.Colors.GREEN_700),
+                mini_card("Ticket médio", brl(r["ticket_medio"]), ft.Icons.PRICE_CHECK,
+                          ft.Colors.CYAN_700),
+                mini_card("Avarias anotadas", len(f["avarias"]), ft.Icons.CAR_CRASH,
+                          ft.Colors.AMBER_800 if f["avarias"] else ft.Colors.GREY_500),
+            ])
+
+            if r["ultima_visita"]:
+                ultima = f"{fmt_dt(r['ultima_visita'])} ({r['dias_sem_vir']} dias atrás)"
+            else:
+                ultima = "nunca veio"
+
+            def linha_info(rotulo, valor, icone):
+                return ft.Row(spacing=8, controls=[
+                    ft.Icon(icone, size=15, color=ft.Colors.GREY_600),
+                    ft.Text(f"{rotulo}:", size=12, color=ft.Colors.GREY_700,
+                            weight=ft.FontWeight.W_600),
+                    ft.Text(valor or "—", size=12, expand=True),
+                ])
+
+            dados = ft.Column(spacing=6, controls=[
+                linha_info("Dono", f"{dono}" + (f" — {tel_dono}" if tel_dono else ""),
+                           ft.Icons.PERSON),
+                linha_info("Porte", categoria, ft.Icons.STRAIGHTEN),
+                linha_info("Ano / Cor", " / ".join(str(x) for x in (ano, cor) if x),
+                           ft.Icons.PALETTE),
+                linha_info("Última lavagem", ultima, ft.Icons.HISTORY),
+                linha_info("Status", "Ativo" if ativo else "Inativo",
+                           ft.Icons.CHECK_CIRCLE_OUTLINE),
+            ])
+
+            # Serviços preferidos (chips)
+            if f["servicos"]:
+                preferidos = ft.Row(wrap=True, spacing=6, run_spacing=6, controls=[
+                    ft.Container(
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                        border_radius=20, bgcolor=ft.Colors.BLUE_50,
+                        content=ft.Text(f"{s[0]} ({s[1]}x)", size=11,
+                                        color=COR_PRIMARIA))
+                    for s in f["servicos"]
+                ])
+            else:
+                preferidos = ft.Text("Ainda sem serviços registrados.", size=12,
+                                     color=ft.Colors.GREY_500)
+
+            # Histórico de avarias das vistorias de entrada
+            if f["avarias"]:
+                avarias = ft.Column(spacing=6, controls=[
+                    ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.START,
+                           controls=[
+                               ft.Icon(ft.Icons.WARNING_AMBER, size=15,
+                                       color=ft.Colors.AMBER_800),
+                               ft.Text(f"{fmt_date(a[1])} — Comanda #{a[0]}:", size=12,
+                                       weight=ft.FontWeight.W_600,
+                                       color=ft.Colors.GREY_700),
+                               ft.Text(a[2], size=12, expand=True),
+                           ]) for a in f["avarias"]
+                ])
+            else:
+                avarias = ft.Text("Nenhuma avaria anotada nas vistorias de entrada.",
+                                  size=12, color=ft.Colors.GREY_500)
+
+            # Histórico de comandas (as 20 mais recentes)
+            if f["comandas"]:
+                # (id_ordem, entrada_em, status, valor_final, valor_pago, forma)
+                hist = ft.DataTable(
+                    heading_row_color=ft.Colors.GREY_50,
+                    columns=[ft.DataColumn(ft.Text("Comanda")),
+                             ft.DataColumn(ft.Text("Data")),
+                             ft.DataColumn(ft.Text("Status")),
+                             ft.DataColumn(ft.Text("Valor")),
+                             ft.DataColumn(ft.Text("Pagamento"))],
+                    rows=[ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(f"#{o[0]}", weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(fmt_dt(o[1]))),
+                        ft.DataCell(badge_status(o[2])),
+                        ft.DataCell(ft.Text(brl(o[3]), weight=ft.FontWeight.W_600)),
+                        ft.DataCell(ft.Text(dict(FORMAS_PAGAMENTO).get(o[5], o[5] or "—"))),
+                    ]) for o in f["comandas"]],
+                )
+            else:
+                hist = ft.Text("Este veículo ainda não tem comandas.", size=12,
+                               color=ft.Colors.GREY_500)
+
+            def secao(titulo, conteudo):
+                return ft.Column(spacing=6, controls=[
+                    ft.Text(titulo, size=13, weight=ft.FontWeight.BOLD, color=COR_PRIMARIA),
+                    conteudo,
+                    ft.Divider(height=10),
+                ])
 
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title_padding=0,
-                title=cabecalho_dialog(f"Histórico — {placa}", ft.Icons.HISTORY),
-                content=ft.Container(width=560, content=ft.Column(tight=True, spacing=12, controls=[
-                    ft.Text(f"{cli_nome} — {veiculo_desc}", size=13, color=ft.Colors.GREY_700),
-                    ft.Text(
-                        f"{len(comandas)} visita" + ("s" if len(comandas) != 1 else "")
-                        + " na lavação",
-                        size=14, weight=ft.FontWeight.BOLD, color=COR_PRIMARIA),
-                    ft.Container(content=lista, height=320 if comandas else None,
-                                 padding=ft.Padding.only(top=4)),
-                ])),
+                title=cabecalho_dialog(f"{placa} — {veiculo_desc}",
+                                       ft.Icons.DIRECTIONS_CAR),
+                content=ft.Container(width=720, height=520, content=ft.Column(
+                    scroll=ft.ScrollMode.AUTO, spacing=10, controls=[
+                        cards,
+                        ft.Divider(height=10),
+                        secao("Dados do veículo", dados),
+                        secao("Serviços preferidos", preferidos),
+                        secao("Vistorias de entrada (avarias)", avarias),
+                        secao("Histórico de comandas", hist),
+                    ])),
                 actions=[
+                    ft.FilledButton(
+                        "WhatsApp", icon=ft.Icons.CHAT,
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_600),
+                        on_click=lambda e: (fechar_dialog(),
+                                            menu_whatsapp(idc, dono, tel_dono,
+                                                          sugerido="carro_pronto",
+                                                          veiculo_pref=placa))),
                     ft.TextButton("Fechar", on_click=lambda e: fechar_dialog()),
                 ],
             ))
 
-        def form_veiculo(veiculo=None):
-            editando = veiculo is not None
-            clientes = mod_cli.buscar_clientes()
-            categorias = mod_veic.listar_categorias()
-
-            dd_cliente = ft.Dropdown(
-                label="Cliente *", width=420,
-                # enable_filter: dá pra digitar o nome pra filtrar, em vez de rolar a lista
-                # inteira (inviável com centenas de clientes). Mesmo padrão das telas de
-                # Comandas e Agendamentos.
-                hint_text="Busque pelo nome do cliente", enable_filter=True,
-                options=[ft.dropdown.Option(key=str(c[0]), text=c[1]) for c in clientes],
-                value=str(veiculo[1]) if editando else None,
-            )
-            dd_categoria = ft.Dropdown(
-                label="Porte *", width=200,
-                options=[ft.dropdown.Option(key=str(cat[0]), text=cat[1]) for cat in categorias],
-                value=str(veiculo[3]) if editando else None,
-            )
-            f_placa = ft.TextField(label="Placa *", value=veiculo[5] if editando else "", width=200)
-            f_marca = ft.TextField(label="Marca", value=(veiculo[6] or "") if editando else "", width=200)
-            f_modelo = ft.TextField(label="Modelo", value=(veiculo[7] or "") if editando else "", width=200)
-            f_ano = ft.TextField(label="Ano", width=120,
-                                 value=(str(veiculo[8]) if editando and veiculo[8] else ""))
-            f_cor = ft.TextField(label="Cor", value=(veiculo[9] or "") if editando else "", width=200)
-            erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
-
-            # Máscaras: a placa se formata sozinha (ABC-1234 / ABC1D23) e o ano
-            # só aceita números (no máx. 4). Ao digitar, o aviso de erro some.
-            def mascara_placa_campo(e):
-                f_placa.value = val.mascara_placa(f_placa.value)
-                erro_form.value = ""
-                page.update()
-
-            def so_digitos_ano(e):
-                f_ano.value = val.so_digitos(f_ano.value)[:4]
-                erro_form.value = ""
-                page.update()
-
-            f_placa.on_change = mascara_placa_campo
-            f_ano.on_change = so_digitos_ano
-
-            def salvar(e):
-                k_cli = dd_key(dd_cliente)
-                k_cat = dd_key(dd_categoria)
-                if not k_cli:
-                    erro_form.value = "Selecione o cliente."
-                    page.update(); return
-                if not k_cat:
-                    erro_form.value = "Selecione o porte."
-                    page.update(); return
-                placa_fmt = val.mascara_placa(f_placa.value or "")
-                if not placa_fmt:
-                    erro_form.value = "A placa é obrigatória."
-                    page.update(); return
-                if not val.validar_placa(placa_fmt):
-                    erro_form.value = "Placa inválida. Use ABC-1234 (antiga) ou ABC1D23 (Mercosul)."
-                    page.update(); return
-                ano_txt = (f_ano.value or "").strip()
-                if ano_txt and not val.validar_ano_veiculo(ano_txt):
-                    erro_form.value = "Ano fora da faixa válida (1900 até o ano que vem)."
-                    page.update(); return
-                ano_val = int(ano_txt) if ano_txt else None
-
-                # Anti-duplicidade da placa (item 1 do backlog): a coluna é UNIQUE, então
-                # o banco recusaria dois iguais. Em vez de deixar o INSERT falhar e mostrar
-                # "verifique a conexão" (mentira), avisamos ANTES de quem é a placa.
-                # No modo edição, ignora o próprio veículo (a placa dele já é dele).
-                existente = mod_veic.buscar_veiculo_por_placa(placa_fmt)
-                if existente and (not editando or existente[0] != veiculo[0]):
-                    (_id, _pl, ex_marca, ex_modelo, ex_dono, ex_ativo) = existente
-                    ex_desc = " ".join(p for p in [ex_marca, ex_modelo] if p) or "veículo"
-                    situacao = "" if ex_ativo else " (inativo)"
-                    erro_form.value = (f"Placa {placa_fmt} já cadastrada: "
-                                       f"{ex_desc} do cliente {ex_dono}{situacao}.")
-                    page.update(); return
-
-                vals = dict(
-                    id_cliente=int(k_cli),
-                    id_categoria=int(k_cat),
-                    placa=placa_fmt,
-                    marca=(f_marca.value or "").strip() or None,
-                    modelo=(f_modelo.value or "").strip() or None,
-                    ano=ano_val,
-                    cor=(f_cor.value or "").strip() or None,
-                )
-                if editando:
-                    ok = mod_veic.editar_veiculo(veiculo[0], **vals)
-                else:
-                    ok = mod_veic.inserir_veiculo(**vals) is not None
-                fechar_dialog()
-                if ok:
-                    atualizar()
-                    sucesso("Veículo atualizado." if editando else "Veículo cadastrado.")
-                else:
-                    aviso("Erro", "Não foi possível salvar. Verifique a conexão com o banco.")
-
-            abrir_dialog(ft.AlertDialog(
-                modal=True,
-                title_padding=0,
-                title=cabecalho_dialog(
-                    "Editar veículo" if editando else "Novo veículo",
-                    ft.Icons.DIRECTIONS_CAR),
-                content=ft.Container(width=460, content=ft.Column(tight=True, spacing=12, controls=[
-                    dd_cliente,
-                    ft.Row([dd_categoria, f_placa], spacing=20),
-                    ft.Row([f_marca, f_modelo], spacing=20),
-                    ft.Row([f_ano, f_cor], spacing=20),
-                    erro_form,
-                ])),
-                actions=[
-                    ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
-                    ft.FilledButton("Salvar", on_click=salvar,
-                                    style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
-                ],
-            ))
+        # ---------- Exportar para Excel/CSV (mesma receita da tela Clientes) ----------
+        def exportar_csv(e=None):
+            veiculos = visiveis["veiculos"]
+            if not veiculos:
+                falha("Não há veículos na lista para exportar.")
+                return
+            pasta = os.path.join(os.path.dirname(__file__), "exportacoes")
+            os.makedirs(pasta, exist_ok=True)
+            arquivo = os.path.join(
+                pasta, f"veiculos_{datetime.now():%Y-%m-%d_%H%M%S}.csv")
+            try:
+                with open(arquivo, "w", newline="", encoding="utf-8-sig") as f:
+                    w = csv.writer(f, delimiter=";")   # ; = separador que o Excel BR espera
+                    w.writerow(["Placa", "Cliente", "Telefone", "Porte", "Marca",
+                                "Modelo", "Ano", "Cor", "Status", "Última lavagem"])
+                    for v in veiculos:
+                        (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo,
+                         ano, cor, ativo, telefone, ultima_lavagem) = v
+                        w.writerow([placa, cli_nome, telefone or "", cat_nome or "",
+                                    marca or "", modelo or "", ano or "", cor or "",
+                                    "Ativo" if ativo else "Inativo",
+                                    fmt_date(ultima_lavagem) if ultima_lavagem else ""])
+                sucesso(f"{len(veiculos)} veículo(s) exportado(s) para a pasta 'exportacoes'.")
+            except Exception as erro:
+                falha(f"Não foi possível exportar: {erro}")
 
         botao_novo = ft.FilledButton(
-            "Novo veículo", icon=ft.Icons.ADD, on_click=lambda e: form_veiculo(),
+            "Novo veículo", icon=ft.Icons.ADD,
+            on_click=lambda e: form_veiculo(ao_salvar=atualizar),
             style=ft.ButtonStyle(bgcolor=COR_PRIMARIA))
+
+        botao_exportar = ft.OutlinedButton(
+            "Exportar CSV", icon=ft.Icons.DOWNLOAD, on_click=exportar_csv)
 
         corpo_tabela.controls = [montar_linhas()]
 
         return ft.Column(expand=True, spacing=20, controls=[
             cabecalho("Veículos", "Cadastro de veículos por cliente e porte", acao=botao_novo),
-            ft.Row([campo_busca, mostrar_inativos], spacing=16),
+            ft.Row([campo_busca, mostrar_inativos, botao_exportar], spacing=16),
             card_tabela("Lista de veículos", corpo_tabela),
         ])
 
@@ -2779,13 +2959,46 @@ def main(page: ft.Page):
                             weight=ft.FontWeight.W_600))
 
     def pagina_agendamentos():
+        # A agenda abre mostrando SÓ o dia de hoje e os status "vivos" — o que
+        # interessa na operação. "Todos" (botão e dropdown) abre o histórico.
         f_filtro_data = ft.TextField(
-            label="Filtrar por data (AAAA-MM-DD)", width=240, hint_text="vazio = todas")
+            label="Data", width=170, hint_text="dd/mm/aaaa (vazio = todas)",
+            value=datetime.now().strftime("%d/%m/%Y"))
+        dd_filtro_status = ft.Dropdown(
+            label="Status", width=210, value="ativos",
+            options=[
+                ft.dropdown.Option(key="ativos", text="Ativos (agenda viva)"),
+                ft.dropdown.Option(key="todos", text="Todos os status"),
+                *[ft.dropdown.Option(key=s, text=s.replace("_", " ").capitalize())
+                  for s in mod_ag.STATUS_VALIDOS],
+            ])
         corpo_tabela = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
         def montar_linhas():
-            data = (f_filtro_data.value or "").strip() or None
-            ags = mod_ag.buscar_agendamentos(data=data)
+            # Data em formato brasileiro; o backend espera AAAA-MM-DD.
+            # Digitação pela metade (ex.: "18/0") não filtra ainda; data completa
+            # mas inválida (ex.: 31/02/2026) avisa em vez de fingir que não achou.
+            texto_data = (f_filtro_data.value or "").strip()
+            data = None
+            if texto_data:
+                d = val.parse_data_br(texto_data)
+                if d:
+                    data = d.strftime("%Y-%m-%d")
+                elif len(texto_data) >= 10:
+                    return ft.Container(
+                        padding=30, alignment=ft.Alignment.CENTER,
+                        content=ft.Text("Data inválida — use dd/mm/aaaa.",
+                                        color=ft.Colors.RED_400))
+
+            chave = dd_key(dd_filtro_status) or "todos"
+            if chave == "ativos":
+                filtro_status = list(mod_ag.STATUS_ATIVOS)
+            elif chave == "todos":
+                filtro_status = None
+            else:
+                filtro_status = chave
+
+            ags = mod_ag.buscar_agendamentos(data=data, status=filtro_status)
             if not ags:
                 return ft.Container(
                     padding=30, alignment=ft.Alignment.CENTER,
@@ -2825,7 +3038,27 @@ def main(page: ft.Page):
             corpo_tabela.controls = [montar_linhas()]
             page.update()
 
-        f_filtro_data.on_change = atualizar
+        def ao_digitar_data(e):
+            f_filtro_data.value = val.mascara_data(f_filtro_data.value)
+            atualizar()
+
+        f_filtro_data.on_change = ao_digitar_data
+        dd_filtro_status.on_change = atualizar
+
+        # Atalhos de dia: preenchem o campo de data e refazem a lista na hora.
+        def ir_para_dia(deslocamento_dias):
+            if deslocamento_dias is None:
+                f_filtro_data.value = ""            # Todos: sem filtro de data
+            else:
+                alvo = datetime.now() + timedelta(days=deslocamento_dias)
+                f_filtro_data.value = alvo.strftime("%d/%m/%Y")
+            atualizar()
+
+        botoes_dia = ft.Row(spacing=6, controls=[
+            ft.OutlinedButton("Hoje", on_click=lambda e: ir_para_dia(0)),
+            ft.OutlinedButton("Amanhã", on_click=lambda e: ir_para_dia(1)),
+            ft.OutlinedButton("Todos", on_click=lambda e: ir_para_dia(None)),
+        ])
 
         # ---- Novo agendamento ----
         def form_novo():
@@ -2837,10 +3070,13 @@ def main(page: ft.Page):
                     key=str(v[0]),
                     text=f"{v[5]} — {v[2]}" + (f" ({v[7]})" if v[7] else ""))  # placa — cliente (modelo)
                     for v in veiculos])
-            hoje = datetime.now().strftime("%Y-%m-%d")
-            f_data = ft.TextField(label="Data (AAAA-MM-DD) *", value=hoje, width=200)
-            f_hora = ft.TextField(label="Hora (HH:MM) *", value="09:00", width=140)
-            f_dur = ft.TextField(label="Duração (min)", width=140)
+            hoje = datetime.now().strftime("%d/%m/%Y")
+            f_data = ft.TextField(label="Data *", hint_text="dd/mm/aaaa",
+                                  value=hoje, width=200)
+            f_hora = ft.TextField(label="Hora *", hint_text="HH:MM",
+                                  value="09:00", width=140)
+            f_dur = ft.TextField(label="Duração (min)", width=170,
+                                 helper=ft.Text("soma dos serviços; pode ajustar", size=10))
             f_box = ft.TextField(label="Box", width=120)
             dd_origem = ft.Dropdown(
                 label="Origem", width=200, value="manual",
@@ -2858,6 +3094,39 @@ def main(page: ft.Page):
                     scroll=ft.ScrollMode.AUTO, spacing=0))
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
+            # Duração sugerida: soma dos tempos médios do catálogo (servico.
+            # tempo_medio_min) conforme os serviços vão sendo marcados. Se o
+            # operador digitar a própria duração, a sugestão para de mexer no
+            # campo (e volta a sugerir se ele apagar tudo).
+            tempos = {s[0]: (s[3] or 0) for s in servicos}
+            dur_manual = {"ligada": False}
+
+            def sugerir_duracao(e=None):
+                if dur_manual["ligada"]:
+                    return
+                total = sum(tempos.get(sid, 0) for sid, c in chk_servicos if c.value)
+                f_dur.value = str(total) if total else ""
+                page.update()
+
+            def digitou_duracao(e):
+                f_dur.value = val.so_digitos(f_dur.value)[:3]
+                dur_manual["ligada"] = bool(f_dur.value)
+                page.update()
+
+            # Máscaras de data/hora (mesmo padrão de Clientes/Veículos).
+            def mascarar(campo, funcao):
+                def _on_change(e):
+                    campo.value = funcao(campo.value)
+                    erro.value = ""
+                    page.update()
+                return _on_change
+
+            f_data.on_change = mascarar(f_data, val.mascara_data)
+            f_hora.on_change = mascarar(f_hora, val.mascara_hora)
+            f_dur.on_change = digitou_duracao
+            for _sid, c in chk_servicos:
+                c.on_change = sugerir_duracao
+
             def salvar(e):
                 k_vei = dd_key(dd_vei)
                 if not k_vei:
@@ -2869,15 +3138,12 @@ def main(page: ft.Page):
                 data_txt = (f_data.value or "").strip()
                 hora_txt = (f_hora.value or "").strip()
                 try:
-                    quando = datetime.strptime(f"{data_txt} {hora_txt}", "%Y-%m-%d %H:%M")
+                    quando = datetime.strptime(f"{data_txt} {hora_txt}", "%d/%m/%Y %H:%M")
                 except ValueError:
-                    erro.value = "Data/hora inválida. Use AAAA-MM-DD e HH:MM."
+                    erro.value = "Data/hora inválida. Use dd/mm/aaaa e HH:MM."
                     page.update(); return
                 dur_txt = (f_dur.value or "").strip()
-                if dur_txt and not dur_txt.isdigit():
-                    erro.value = "Duração deve ser um número (minutos)."
-                    page.update(); return
-                dur_val = int(dur_txt) if dur_txt else None
+                dur_val = int(dur_txt) if dur_txt.isdigit() else None
                 box = (f_box.value or "").strip() or None
                 escolhidos = [sid for sid, c in chk_servicos if c.value]
 
@@ -2927,24 +3193,39 @@ def main(page: ft.Page):
         # ---- Remarcar ----
         def form_remarcar(id_ag, atual):
             data_atual = atual[3]
-            f_data = ft.TextField(label="Nova data (AAAA-MM-DD) *", width=200,
-                                  value=data_atual.strftime("%Y-%m-%d") if data_atual else "")
-            f_hora = ft.TextField(label="Nova hora (HH:MM) *", width=140,
+            f_data = ft.TextField(label="Nova data *", hint_text="dd/mm/aaaa", width=200,
+                                  value=data_atual.strftime("%d/%m/%Y") if data_atual else "")
+            f_hora = ft.TextField(label="Nova hora *", hint_text="HH:MM", width=140,
                                   value=data_atual.strftime("%H:%M") if data_atual else "")
-            f_box = ft.TextField(label="Box", width=120, value=atual[5] or "")
+            f_box = ft.TextField(label="Box", width=120, value=atual[5] or "",
+                                 helper=ft.Text("vazio = sem box", size=10))
             f_dur = ft.TextField(label="Duração (min)", width=140,
                                  value=str(atual[4]) if atual[4] else "")
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+            def mascarar(campo, funcao):
+                def _on_change(e):
+                    campo.value = funcao(campo.value)
+                    erro.value = ""
+                    page.update()
+                return _on_change
+
+            f_data.on_change = mascarar(f_data, val.mascara_data)
+            f_hora.on_change = mascarar(f_hora, val.mascara_hora)
+            f_dur.on_change = mascarar(f_dur, lambda t: val.so_digitos(t)[:3])
 
             def salvar(e):
                 try:
                     quando = datetime.strptime(
                         f"{(f_data.value or '').strip()} {(f_hora.value or '').strip()}",
-                        "%Y-%m-%d %H:%M")
+                        "%d/%m/%Y %H:%M")
                 except ValueError:
-                    erro.value = "Data/hora inválida."; page.update(); return
+                    erro.value = "Data/hora inválida. Use dd/mm/aaaa e HH:MM."
+                    page.update(); return
                 dur_txt = (f_dur.value or "").strip()
                 dur_val = int(dur_txt) if dur_txt.isdigit() else None
+                # Box vazio = tirar do box (o remarcar() agora apaga de verdade —
+                # antes o COALESCE mantinha o box velho em silêncio).
                 ok = mod_ag.remarcar(
                     id_ag, quando.strftime("%Y-%m-%d %H:%M:%S"),
                     novo_box=(f_box.value or "").strip() or None, nova_duracao_min=dur_val)
@@ -3081,7 +3362,7 @@ def main(page: ft.Page):
 
         return ft.Column(expand=True, spacing=20, controls=[
             cabecalho("Agendamentos", "Agenda por data, box e serviços", acao=botao_novo),
-            ft.Row([f_filtro_data], spacing=16),
+            ft.Row([f_filtro_data, botoes_dia, dd_filtro_status], spacing=16),
             card_tabela("Agendamentos", corpo_tabela),
         ])
 
