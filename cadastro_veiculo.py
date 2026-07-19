@@ -22,6 +22,12 @@ from conexao import conectar
 # O COALESCE antigo tornava impossível apagar cor/marca/modelo/ano — ver editar_veiculo.
 MANTER = object()
 
+# Faturamento de uma comanda = o que foi REALMENTE cobrado. Mesma regra do
+# dashboard.py e do cadastro_cliente.py: só comanda finalizada/entregue, pelo
+# valor final (total − desconto + acréscimo). Por isso os números da ficha do
+# veículo batem com o Dashboard e com a ficha do cliente.
+_VALOR_FINAL = "(o.valor_total - COALESCE(o.desconto, 0) + COALESCE(o.acrescimo, 0))"
+
 
 def listar_categorias():
     """
@@ -99,11 +105,21 @@ def buscar_veiculos(termo=None, apenas_ativos=True):
 
         # JOINs trazem o NOME do cliente (c.nome) e o NOME do porte (cat.nome) junto,
         # para a tela mostrar texto legível sem fazer consultas extras por linha.
-        # ⚠️ Ordem das 11 colunas = tupla desempacotada em app.py.pagina_veiculos:
-        #    (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor, ativo)
+        # Colunas novas SEMPRE no fim (mesma regra do buscar_clientes): as telas leem
+        # a tupla por posição, e acrescentar no fim não desloca os índices antigos.
+        # A subquery de última lavagem usa o MESMO critério de faturamento do
+        # dashboard.py: só comanda finalizada/entregue conta como lavagem de verdade.
+        # ⚠️ Ordem das 13 colunas = tupla desempacotada em app.py.pagina_veiculos:
+        #    (idv, idc, cli_nome, idcat, cat_nome, placa, marca, modelo, ano, cor,
+        #     ativo, telefone, ultima_lavagem)
         query = """
             SELECT v.id_veiculo, v.id_cliente, c.nome, v.id_categoria,
-                   cat.nome, v.placa, v.marca, v.modelo, v.ano, v.cor, v.ativo
+                   cat.nome, v.placa, v.marca, v.modelo, v.ano, v.cor, v.ativo,
+                   c.telefone,
+                   (SELECT MAX(o.entrada_em)
+                      FROM ordem_servico o
+                     WHERE o.id_veiculo = v.id_veiculo
+                       AND o.status IN ('finalizado', 'entregue')) AS ultima_lavagem
             FROM veiculo v
             JOIN cliente c             ON c.id_cliente   = v.id_cliente
             JOIN categoria_veiculo cat ON cat.id_categoria = v.id_categoria
@@ -246,6 +262,146 @@ def buscar_veiculos_por_cliente(id_cliente, apenas_ativos=True):
     except Exception as erro:
         print(f"Erro ao buscar veículos do cliente: {erro}")
         return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def ficha_veiculo(id_veiculo):
+    """
+    O "raio-x do carro" numa única chamada — espelho da ficha_cliente() do
+    cadastro_cliente.py, só que centrado no veículo, não no dono.
+
+    Retorna um DICIONÁRIO (nome de chave é mais legível que posição de tupla)
+    ou None se o veículo não existir:
+
+      {
+        'veiculo':  (id_veiculo, placa, marca, modelo, ano, cor, categoria,
+                     id_cliente, dono, telefone_dono, ativo),
+        'resumo':   {'visitas', 'total_gasto', 'ticket_medio',
+                     'primeira_visita', 'ultima_visita', 'dias_sem_vir'},
+        'servicos': [(nome_servico, vezes), ...],   # o que mais fazem NESTE carro
+        'comandas': [(id_ordem, entrada_em, status, valor_final, valor_pago,
+                      forma_pagamento), ...],       # as 20 mais recentes
+        'avarias':  [(id_ordem, entrada_em, avarias), ...]
+      }
+
+    'avarias' é o histórico das vistorias de entrada: cada comanda em que o
+    atendente anotou dano pré-existente na chegada. Serve de comprovante contra
+    reclamação de dano antigo ("esse risco já estava aí em tal data").
+    O resumo usa o MESMO critério de faturamento do dashboard.py (status
+    finalizado/entregue, valor final) — os números batem entre as telas.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    try:
+        cursor = conexao.cursor()
+
+        # --- O veículo em si (com nome do porte e dados do dono via JOIN) ---
+        cursor.execute(
+            """
+            SELECT v.id_veiculo, v.placa, v.marca, v.modelo, v.ano, v.cor,
+                   cat.nome, v.id_cliente, c.nome, c.telefone, v.ativo
+            FROM veiculo v
+            JOIN cliente c             ON c.id_cliente   = v.id_cliente
+            JOIN categoria_veiculo cat ON cat.id_categoria = v.id_categoria
+            WHERE v.id_veiculo = %s;
+            """,
+            (id_veiculo,)
+        )
+        veiculo = cursor.fetchone()
+        if not veiculo:
+            return None
+
+        # --- Resumo financeiro: só comandas que viraram dinheiro de verdade ---
+        # NULLIF evita divisão por zero no ticket médio (carro que nunca veio).
+        cursor.execute(
+            f"""
+            SELECT COUNT(*)                                   AS visitas,
+                   COALESCE(SUM({_VALOR_FINAL}), 0)           AS total_gasto,
+                   COALESCE(SUM({_VALOR_FINAL}), 0)
+                       / NULLIF(COUNT(*), 0)                  AS ticket_medio,
+                   MIN(o.entrada_em)                          AS primeira,
+                   MAX(o.entrada_em)                          AS ultima
+            FROM ordem_servico o
+            WHERE o.id_veiculo = %s
+              AND o.status IN ('finalizado', 'entregue');
+            """,
+            (id_veiculo,)
+        )
+        visitas, total_gasto, ticket, primeira, ultima = cursor.fetchone()
+
+        # --- Serviços preferidos (o que mais fazem neste carro) ---
+        cursor.execute(
+            """
+            SELECT s.nome, COUNT(*) AS vezes
+            FROM ordem_servico_item i
+            JOIN ordem_servico o ON o.id_ordem = i.id_ordem
+            JOIN servico s       ON s.id_servico = i.id_servico
+            WHERE o.id_veiculo = %s AND i.id_servico IS NOT NULL
+            GROUP BY s.nome
+            ORDER BY vezes DESC, s.nome
+            LIMIT 5;
+            """,
+            (id_veiculo,)
+        )
+        servicos = cursor.fetchall()
+
+        # --- Histórico de comandas (as 20 mais recentes) ---
+        cursor.execute(
+            f"""
+            SELECT o.id_ordem, o.entrada_em, o.status,
+                   {_VALOR_FINAL} AS valor_final,
+                   COALESCE(o.valor_pago, 0) AS valor_pago,
+                   o.forma_pagamento
+            FROM ordem_servico o
+            WHERE o.id_veiculo = %s
+            ORDER BY o.entrada_em DESC
+            LIMIT 20;
+            """,
+            (id_veiculo,)
+        )
+        comandas = cursor.fetchall()
+
+        # --- Histórico de avarias (vistorias de entrada preenchidas) ---
+        cursor.execute(
+            """
+            SELECT o.id_ordem, o.entrada_em, o.avarias
+            FROM ordem_servico o
+            WHERE o.id_veiculo = %s
+              AND o.avarias IS NOT NULL AND TRIM(o.avarias) <> ''
+            ORDER BY o.entrada_em DESC;
+            """,
+            (id_veiculo,)
+        )
+        avarias = cursor.fetchall()
+
+        dias_sem_vir = None
+        if ultima:
+            from datetime import datetime
+            dias_sem_vir = (datetime.now() - ultima).days
+
+        return {
+            "veiculo": veiculo,
+            "resumo": {
+                "visitas": visitas or 0,
+                "total_gasto": total_gasto or 0,
+                "ticket_medio": ticket or 0,
+                "primeira_visita": primeira,
+                "ultima_visita": ultima,
+                "dias_sem_vir": dias_sem_vir,
+            },
+            "servicos": servicos,
+            "comandas": comandas,
+            "avarias": avarias,
+        }
+
+    except Exception as erro:
+        print(f"Erro ao montar ficha do veículo: {erro}")
+        return None
 
     finally:
         cursor.close()
