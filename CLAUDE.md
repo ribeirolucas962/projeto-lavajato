@@ -238,7 +238,7 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   terminal). Trocado por `webbrowser.open(link)` (síncrono, biblioteca padrão, abre o navegador
   do Windows — que é onde o WhatsApp Web roda). Testado e funcionando.
 
-### Módulo 2 (Veículo) — turbinando (combinado em 2026-07-13)
+### Módulo 2 (Veículo) — turbinado (backlog de 2026-07-13, concluído em 2026-07-18)
 A tela de Veículos era CRUD + busca + histórico de comandas. Backlog acordado, **na ordem**:
 
 **✅ Fase 1 — bugs e validação (feita em 2026-07-14)**
@@ -257,15 +257,54 @@ A tela de Veículos era CRUD + busca + histórico de comandas. Backlog acordado,
 4. **Dropdown de Cliente com busca:** `enable_filter=True` + `hint_text` (mesmo padrão já usado em
    Comandas/Agendamentos) — digita o nome pra filtrar em vez de rolar centenas.
 
-**🔜 Fase 2 — "raio-x do carro" (próxima)**
-5. **WhatsApp na linha do veículo** (faz mais sentido aqui que em Clientes: a mensagem
-   "seu Fiat Toro (ABC-1234) está pronto" nasce com placa + dono na mão).
-6. **Coluna "Última lavagem"** na tabela (hoje só abrindo o histórico).
-7. **Ficha do veículo 360°** (espelho da ficha do cliente): visitas, total gasto, serviços
-   preferidos e **histórico de avarias** das vistorias de entrada — comprovante contra
-   reclamação de dano pré-existente.
-8. **Botão "Novo veículo" dentro da ficha do cliente**, com o dono já preenchido.
-9. **Exportar CSV** da lista, como em Clientes.
+**✅ Fase 2 — "raio-x do carro" (feita em 2026-07-18)**
+5. **WhatsApp na linha do veículo:** `menu_whatsapp`/`botao_whatsapp` ganharam o parâmetro
+   `veiculo_pref` (placa) — o carro daquela linha já vem selecionado no dropdown da
+   mensagem ("seu Fiat Uno (ABC-1234) está pronto"), com o modelo "Veículo pronto" sugerido.
+6. **Coluna "Última lavagem"** na tabela: `buscar_veiculos()` ganhou `c.telefone` e a
+   subquery `ultima_lavagem` (MAX de `entrada_em`, só finalizado/entregue — mesmo critério
+   do dashboard) **no fim do SELECT** (13 colunas; índices antigos preservados).
+7. **Ficha do veículo 360°:** `ficha_veiculo()` em `cadastro_veiculo.py` (dict com veiculo/
+   resumo/servicos/comandas/avarias, mesmo critério de faturamento do dashboard) + diálogo
+   `abrir_ficha_veiculo` — KPIs, dados do carro, serviços preferidos, **vistorias de entrada
+   (avarias)** e histórico de comandas. **Substituiu o antigo diálogo "Histórico"** (o
+   histórico agora vive dentro da ficha; ícone `ASSIGNMENT` na linha).
+8. **Botão "Novo veículo" na ficha do cliente:** o `form_veiculo` foi **extraído para o
+   escopo do `main()`** (compartilhado) com `cliente_fixo` (dono pré-selecionado) e
+   `ao_salvar` (callback pós-salvar: a tela de Veículos passa o `atualizar` dela; a ficha
+   do cliente reabre a si mesma para mostrar o carro novo). Fecha a ficha ANTES de abrir
+   o formulário (regra de um diálogo por vez).
+9. **Exportar CSV** da lista (respeita busca e filtro de inativos) → `exportacoes/`,
+   `utf-8-sig` + `;`, mesmo padrão de Clientes.
+
+### Módulo 4 (Agendamento) — turbinando (combinado em 2026-07-19)
+Diagnóstico de 19/07: backend sólido (conflito de box com matemática de sobreposição,
+transação única no criar, ponte "Gerar comanda" que copia serviços com preço do porte
+e marca o agendamento como em_execucao). Backlog acordado, **na ordem**:
+
+**✅ Fase 1 — básico do dia a dia (feita em 2026-07-19)**
+1. **Tela abre filtrada em HOJE** + botões Hoje/Amanhã/Todos + data em dd/mm/aaaa com
+   máscara. Digitação parcial não filtra ainda; data completa mas inválida mostra
+   "Data inválida" em vez de fingir lista vazia.
+2. **Filtro de status:** dropdown "Ativos (agenda viva)" (padrão) / Todos / individuais.
+   `buscar_agendamentos()` agora aceita um status OU uma lista (`= ANY(%s)`).
+3. **Máscara/validação de data e hora** nos forms Novo e Remarcar (dd/mm/aaaa + HH:MM;
+   `mascara_hora()` nova no `validadores.py`).
+4. **`remarcar()` migrado de COALESCE para o sentinela `MANTER`** (mesmo padrão de
+   cliente/veículo): limpar o box ao remarcar agora TIRA o carro do box — antes o
+   COALESCE mantinha o box velho em silêncio. A checagem de conflito usa o box/duração
+   que valerão DEPOIS do update. Round-trip testado no banco (trocar → limpar → restaurar).
+5. **Duração sugerida:** marcar serviços soma `servico.tempo_medio_min` e preenche a
+   duração. Operador digitou → sugestão para de mexer; apagou tudo → volta a sugerir.
+
+**🔜 Fase 2 — a agenda vira ferramenta (próxima)**
+6. **WhatsApp do agendamento:** modelo novo "Lembrete de agendamento" no `whatsapp.py`
+   + botão na linha e no detalhe (reaproveitar `menu_whatsapp` com `veiculo_pref`).
+7. **Aviso de cliente "furão"** no detalhe: contagem de `nao_compareceu` do cliente.
+8. **Aviso (sem bloquear) de mesmo veículo agendado 2x no mesmo dia** — hoje, sem box
+   preenchido, nenhuma checagem acontece.
+9. **Editar serviços/observações** de agendamento existente (hoje só remarca
+   data/box/duração; trocar serviço exige cancelar e criar de novo).
 
 - **Depois disso:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
   executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.
