@@ -130,14 +130,30 @@ MODELOS = {
             "Qualquer dúvida é só me chamar. Obrigado!"
         ),
     },
+    # {quando} = data/hora do agendamento (ex.: "quinta-feira (24/07) às 09:00").
+    # É o único modelo que usa esse campo; os demais ignoram (str.format descarta
+    # os parâmetros a mais), e montar_mensagem cai num texto neutro se vier vazio.
+    "lembrete_agendamento": {
+        "titulo": "Lembrete de agendamento",
+        "icone": "agenda",
+        "texto": (
+            "Olá, {cliente}! Tudo bem?\n\n"
+            "Passando para lembrar do seu agendamento aqui na {empresa}: "
+            "{quando}, para o veículo {veiculo}. 🗓️🚙\n\n"
+            "Está tudo certo para esse horário? Se precisar remarcar, "
+            "é só me avisar por aqui!"
+        ),
+    },
 }
 
 
-def montar_mensagem(modelo, cliente="", veiculo="", empresa=EMPRESA):
+def montar_mensagem(modelo, cliente="", veiculo="", empresa=EMPRESA, quando=""):
     """
     Preenche um modelo com os dados do cliente.
     'modelo' é a chave do dicionário MODELOS (ex.: 'carro_pronto').
     Campos não informados viram um texto neutro ("seu veículo") em vez de sumirem.
+    'quando' (data/hora) só é usado pelo modelo de lembrete de agendamento; nos
+    outros modelos ele é ignorado (str.format descarta parâmetros a mais).
     """
     m = MODELOS.get(modelo)
     if not m:
@@ -147,12 +163,13 @@ def montar_mensagem(modelo, cliente="", veiculo="", empresa=EMPRESA):
         cliente=primeiro_nome,
         veiculo=(veiculo or "").strip() or "seu veículo",
         empresa=empresa,
+        quando=(quando or "").strip() or "o horário combinado",
     )
 
 
-def link_modelo(telefone, modelo, cliente="", veiculo=""):
+def link_modelo(telefone, modelo, cliente="", veiculo="", quando=""):
     """Atalho: monta a mensagem a partir do modelo E devolve o link do WhatsApp."""
-    return link_whatsapp(telefone, montar_mensagem(modelo, cliente, veiculo))
+    return link_whatsapp(telefone, montar_mensagem(modelo, cliente, veiculo, quando=quando))
 
 
 def modelos_disponiveis():
@@ -180,6 +197,11 @@ if __name__ == "__main__":
     print("\n— Mensagem pronta (veículo pronto) —")
     print(montar_mensagem("carro_pronto", cliente="João da Silva",
                           veiculo="Fiat Toro (ABC-1234)"))
+
+    print("\n— Mensagem pronta (lembrete de agendamento) —")
+    print(montar_mensagem("lembrete_agendamento", cliente="Maria Souza",
+                          veiculo="Fiat Uno (XYZ-9090)",
+                          quando="quinta-feira (24/07) às 09:00"))
 
     print("\n— Link gerado —")
     print(link_modelo("(47) 99999-0000", "aniversario", cliente="Maria Souza"))

@@ -106,6 +106,21 @@ def fmt_dt(dt):
         return "—"
 
 
+# weekday(): 0 = segunda ... 6 = domingo (mesma ordem desta lista).
+_DIAS_SEMANA = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+                "sexta-feira", "sábado", "domingo"]
+
+
+def fmt_quando_wpp(dt):
+    """Data/hora amigável para a mensagem de WhatsApp do lembrete de agendamento:
+    'quinta-feira (24/07) às 09:00'. Devolve '' se der ruim (a mensagem cai no
+    texto neutro 'o horário combinado')."""
+    try:
+        return f"{_DIAS_SEMANA[dt.weekday()]} ({dt.strftime('%d/%m')}) às {dt.strftime('%H:%M')}"
+    except Exception:
+        return ""
+
+
 def fmt_date(d):
     """Formata uma data como 'dd/mm/aaaa'. Tolerante a None."""
     try:
@@ -360,15 +375,19 @@ def main(page: ft.Page):
         "sentimos_falta": (ft.Icons.FAVORITE, ft.Colors.RED_300),
         "orcamento_pronto": (ft.Icons.HOURGLASS_TOP, ft.Colors.BLUE_600),
         "cobranca": (ft.Icons.PAYMENTS, ft.Colors.AMBER_800),
+        "lembrete_agendamento": (ft.Icons.EVENT_AVAILABLE, ft.Colors.INDIGO_400),
     }
 
-    def menu_whatsapp(id_cliente, nome, telefone, sugerido=None, veiculo_pref=None):
+    def menu_whatsapp(id_cliente, nome, telefone, sugerido=None, veiculo_pref=None,
+                      quando=None):
         """
         Diálogo com as mensagens prontas. Clicou no modelo -> abre o WhatsApp.
         'sugerido' destaca o modelo mais provável naquele contexto (ex.: na lista
         de aniversariantes, "Feliz aniversário" vem primeiro).
         'veiculo_pref' é uma PLACA: quando o clique veio da tela de Veículos, o
         carro daquela linha já vem selecionado no dropdown (em vez do primeiro).
+        'quando' é o texto de data/hora do lembrete de agendamento (ex.:
+        "quinta-feira (24/07) às 09:00"); só o modelo lembrete_agendamento o usa.
         """
         if not wpp.normalizar_numero(telefone):
             falha("Este cliente não tem um telefone válido cadastrado.")
@@ -401,7 +420,7 @@ def main(page: ft.Page):
 
         def enviar(modelo):
             link = wpp.link_modelo(telefone, modelo, cliente=nome,
-                                   veiculo=dd_veic.value or "")
+                                   veiculo=dd_veic.value or "", quando=quando or "")
             if not link:
                 falha("Telefone inválido para o WhatsApp.")
                 return
@@ -437,7 +456,8 @@ def main(page: ft.Page):
                                   else ft.FontWeight.NORMAL),
                     subtitle=ft.Text(
                         wpp.montar_mensagem(chave, cliente=nome,
-                                            veiculo=dd_veic.value or "").split("\n")[0],
+                                            veiculo=dd_veic.value or "",
+                                            quando=quando or "").split("\n")[0],
                         size=11, color=ft.Colors.GREY_600),
                     on_click=lambda e, c=chave: enviar(c),
                 ),
@@ -458,7 +478,8 @@ def main(page: ft.Page):
             actions=[ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog())],
         ))
 
-    def botao_whatsapp(id_cliente, nome, telefone, sugerido=None, veiculo_pref=None):
+    def botao_whatsapp(id_cliente, nome, telefone, sugerido=None, veiculo_pref=None,
+                       quando=None):
         """Ícone verde do WhatsApp. Fica apagado se o cliente não tem telefone."""
         valido = bool(wpp.normalizar_numero(telefone))
         return ft.IconButton(
@@ -467,7 +488,7 @@ def main(page: ft.Page):
             tooltip="Mandar WhatsApp" if valido else "Sem telefone cadastrado",
             disabled=not valido,
             on_click=lambda e: menu_whatsapp(id_cliente, nome, telefone, sugerido,
-                                             veiculo_pref),
+                                             veiculo_pref, quando),
         )
 
     # ------------------------------------------------------------
@@ -3005,8 +3026,10 @@ def main(page: ft.Page):
                     content=ft.Text("Nenhum agendamento encontrado.", color=ft.Colors.GREY_500))
             linhas = []
             for a in ags:
-                # Tupla = SELECT de agendamento.buscar_agendamentos().
-                (ida, data_hora, cli_nome, placa, dur, box, status, origem) = a
+                # Tupla = SELECT de agendamento.buscar_agendamentos() (id_cliente e
+                # telefone no fim, para o WhatsApp do lembrete).
+                (ida, data_hora, cli_nome, placa, dur, box, status, origem,
+                 id_cliente, telefone) = a
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(fmt_dt(data_hora), weight=ft.FontWeight.W_600)),
                     ft.DataCell(ft.Text(cli_nome or "")),
@@ -3015,9 +3038,15 @@ def main(page: ft.Page):
                     ft.DataCell(ft.Text(f"{dur} min" if dur else "—")),
                     ft.DataCell(badge_status_ag(status)),
                     ft.DataCell(ft.Text(dict(ORIGENS).get(origem, origem or "—"))),
-                    ft.DataCell(ft.IconButton(
-                        ft.Icons.OPEN_IN_NEW, icon_color=COR_PRIMARIA, tooltip="Abrir",
-                        on_click=lambda e, i=ida: abrir_detalhe(i))),
+                    ft.DataCell(ft.Row(spacing=0, controls=[
+                        # Lembrete de agendamento já com o carro e o horário desta linha.
+                        botao_whatsapp(id_cliente, cli_nome, telefone,
+                                       sugerido="lembrete_agendamento", veiculo_pref=placa,
+                                       quando=fmt_quando_wpp(data_hora)),
+                        ft.IconButton(
+                            ft.Icons.OPEN_IN_NEW, icon_color=COR_PRIMARIA, tooltip="Abrir",
+                            on_click=lambda e, i=ida: abrir_detalhe(i)),
+                    ])),
                 ]))
             return ft.DataTable(
                 expand=True, heading_row_color=ft.Colors.GREY_50,
@@ -3267,6 +3296,7 @@ def main(page: ft.Page):
             cli = mod_cli.buscar_cliente_por_id(id_cliente)
             vei = mod_veic.buscar_veiculo_por_id(id_veiculo)
             cli_nome = cli[1] if cli else "—"
+            cli_tel = cli[3] if cli else ""   # índice 3 = telefone (buscar_cliente_por_id)
             placa = vei[3] if vei else "—"
 
             def refrescar():
@@ -3298,6 +3328,14 @@ def main(page: ft.Page):
                 botao_status("Concluído", "concluido", ft.Colors.TEAL_700),
             ])
             linha_acoes = ft.Row(wrap=True, spacing=8, controls=[
+                # Lembrete de agendamento: fecha o detalhe ANTES de abrir o menu do
+                # WhatsApp (um diálogo por vez), com o carro e o horário já prontos.
+                ft.OutlinedButton(
+                    "Lembrete WhatsApp", icon=ft.Icons.CHAT,
+                    style=ft.ButtonStyle(color=ft.Colors.GREEN_700),
+                    on_click=lambda e: (fechar_dialog(), menu_whatsapp(
+                        id_cliente, cli_nome, cli_tel, sugerido="lembrete_agendamento",
+                        veiculo_pref=placa, quando=fmt_quando_wpp(data_hora)))),
                 ft.OutlinedButton("Remarcar", icon=ft.Icons.EDIT_CALENDAR, disabled=encerrado,
                                   on_click=lambda e: (fechar_dialog(), form_remarcar(id_ag, ag))),
                 ft.OutlinedButton("Cancelar agend.", icon=ft.Icons.CANCEL, disabled=encerrado,

@@ -151,6 +151,8 @@ def buscar_agendamentos(data=None, status=None, id_cliente=None):
         STATUS_ATIVOS para mostrar só a agenda "viva", sem cancelados/concluídos;
       - id_cliente: só os de um cliente.
     Traz nome do cliente e placa do veículo (JOINs).
+    a.id_cliente e c.telefone vão NO FIM do SELECT (a tela usa para o WhatsApp do
+    lembrete); os índices antigos [0..7] seguem intactos para quem lê por posição.
     """
     conexao = conectar()
     if not conexao:
@@ -161,7 +163,8 @@ def buscar_agendamentos(data=None, status=None, id_cliente=None):
 
         query = """
             SELECT a.id_agendamento, a.data_hora, c.nome, v.placa,
-                   a.duracao_estimada_min, a.box, a.status, a.origem
+                   a.duracao_estimada_min, a.box, a.status, a.origem,
+                   a.id_cliente, c.telefone
             FROM agendamento a
             JOIN cliente c ON c.id_cliente = a.id_cliente
             JOIN veiculo v ON v.id_veiculo = a.id_veiculo
