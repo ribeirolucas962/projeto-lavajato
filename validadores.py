@@ -95,6 +95,14 @@ def mascara_data(texto):
     return f"{d[:2]}/{d[2:4]}/{d[4:]}"
 
 
+def mascara_hora(texto):
+    """Formata hora enquanto digita: '0930' -> '09:30'. Usada nos agendamentos."""
+    d = so_digitos(texto)[:4]
+    if len(d) <= 2:
+        return d
+    return f"{d[:2]}:{d[2:]}"
+
+
 def mascara_placa(texto):
     """
     Arruma a placa enquanto o usuário digita: deixa só letras/números, sobe pra
@@ -266,6 +274,7 @@ if __name__ == "__main__":
     print(" Celular:", mascara_telefone("47999990000"))
     print(" Fixo  :", mascara_telefone("4733334444"))
     print(" Data  :", mascara_data("25121990"))
+    print(" Hora  :", mascara_hora("0930"))
     print(" Placa antiga :", mascara_placa("abc1234"))
     print(" Placa Mercosul:", mascara_placa("abc1d23"))
 

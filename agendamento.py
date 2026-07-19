@@ -17,6 +17,12 @@ ORIGENS_VALIDAS = ('manual', 'whatsapp', 'telefone', 'app')
 # Status que ainda "ocupam" um box/horário (usados na checagem de conflito).
 STATUS_ATIVOS = ('agendado', 'confirmado', 'em_espera', 'em_execucao')
 
+# Sentinela do remarcar (mesma ideia do cadastro_cliente.py / cadastro_veiculo.py):
+# campo NÃO passado = mantém como está; campo passado como None = apaga (grava NULL).
+# O COALESCE antigo tornava impossível LIMPAR o box ao remarcar — apagar o box no
+# formulário e salvar mantinha o box velho em silêncio.
+MANTER = object()
+
 
 def verificar_conflito(data_hora, duracao_estimada_min, box,
                        ignorar_id=None):
@@ -141,7 +147,8 @@ def buscar_agendamentos(data=None, status=None, id_cliente=None):
     """
     Lista agendamentos com filtros opcionais:
       - data: string 'YYYY-MM-DD' -> só os daquele dia;
-      - status: filtra por um status específico;
+      - status: um status ('agendado') OU uma lista/tupla de status — a tela usa
+        STATUS_ATIVOS para mostrar só a agenda "viva", sem cancelados/concluídos;
       - id_cliente: só os de um cliente.
     Traz nome do cliente e placa do veículo (JOINs).
     """
@@ -166,8 +173,14 @@ def buscar_agendamentos(data=None, status=None, id_cliente=None):
             query += " AND a.data_hora::date = %s"
             parametros.append(data)
         if status:
-            query += " AND a.status = %s"
-            parametros.append(status)
+            if isinstance(status, (list, tuple, set)):
+                # = ANY(%s): compara com qualquer item da lista (jeito psycopg2
+                # de fazer IN com lista parametrizada).
+                query += " AND a.status = ANY(%s)"
+                parametros.append(list(status))
+            else:
+                query += " AND a.status = %s"
+                parametros.append(status)
         if id_cliente:
             query += " AND a.id_cliente = %s"
             parametros.append(id_cliente)
@@ -265,27 +278,52 @@ def alterar_status(id_agendamento, novo_status):
         conexao.close()
 
 
-def remarcar(id_agendamento, nova_data_hora, novo_box=None,
-             nova_duracao_min=None, checar_conflito=True):
+def remarcar(id_agendamento, nova_data_hora, novo_box=MANTER,
+             nova_duracao_min=MANTER, checar_conflito=True):
     """
     Remarca um agendamento para outra data/hora (e opcionalmente outro box/duração).
-    Checa conflito ignorando o próprio agendamento. Campos None mantêm o valor atual.
+    Checa conflito ignorando o próprio agendamento.
+
+    Campo que você NÃO passar fica como está (o padrão é o sentinela MANTER).
+    Campo passado como None é APAGADO (vira NULL) — era isso que o COALESCE
+    antigo impedia: tirar o carro do box ao remarcar mantinha o box velho em
+    silêncio. Mesmo padrão do editar_cliente/editar_veiculo.
+
     Retorna True se remarcou, False caso contrário.
     """
-    box_para_checar = novo_box
-    if checar_conflito and box_para_checar is None:
-        # Se não trocou o box, usa o box atual para a checagem de conflito.
+    # Descobre box e duração que valerão DEPOIS do update, para checar conflito
+    # com os valores certos (o que não muda continua contando).
+    box_final = novo_box
+    duracao_final = nova_duracao_min
+    if checar_conflito and (box_final is MANTER or duracao_final is MANTER):
         atual = buscar_agendamento_por_id(id_agendamento)
         if atual:
-            box_para_checar = atual['agendamento'][5]  # coluna box
+            if box_final is MANTER:
+                box_final = atual['agendamento'][5]      # coluna box
+            if duracao_final is MANTER:
+                duracao_final = atual['agendamento'][4]  # duracao_estimada_min
 
-    if checar_conflito and box_para_checar:
-        conflitos = verificar_conflito(nova_data_hora, nova_duracao_min,
-                                       box_para_checar, ignorar_id=id_agendamento)
+    if checar_conflito and box_final not in (None, MANTER):
+        conflitos = verificar_conflito(
+            nova_data_hora, None if duracao_final is MANTER else duracao_final,
+            box_final, ignorar_id=id_agendamento)
         if conflitos:
-            print(f"Conflito ao remarcar no box '{box_para_checar}': "
+            print(f"Conflito ao remarcar no box '{box_final}': "
                   f"{[c[0] for c in conflitos]}")
             return False
+
+    # Monta o SET dinamicamente: só entram os campos realmente enviados.
+    # Nomes de coluna vêm daqui de dentro; valores seguem como %s (sem injection).
+    partes = ["data_hora = %s"]
+    valores = [nova_data_hora]
+    if novo_box is not MANTER:
+        partes.append("box = %s")
+        valores.append(novo_box)
+    if nova_duracao_min is not MANTER:
+        partes.append("duracao_estimada_min = %s")
+        valores.append(nova_duracao_min)
+    partes.append("atualizado_em = NOW()")
+    valores.append(id_agendamento)
 
     conexao = conectar()
     if not conexao:
@@ -294,15 +332,8 @@ def remarcar(id_agendamento, nova_data_hora, novo_box=None,
     try:
         cursor = conexao.cursor()
         cursor.execute(
-            """
-            UPDATE agendamento
-            SET data_hora = %s,
-                box = COALESCE(%s, box),
-                duracao_estimada_min = COALESCE(%s, duracao_estimada_min),
-                atualizado_em = NOW()
-            WHERE id_agendamento = %s;
-            """,
-            (nova_data_hora, novo_box, nova_duracao_min, id_agendamento)
+            f"UPDATE agendamento SET {', '.join(partes)} WHERE id_agendamento = %s;",
+            valores
         )
         conexao.commit()
         return cursor.rowcount > 0
