@@ -297,14 +297,30 @@ e marca o agendamento como em_execucao). Backlog acordado, **na ordem**:
 5. **Duração sugerida:** marcar serviços soma `servico.tempo_medio_min` e preenche a
    duração. Operador digitou → sugestão para de mexer; apagou tudo → volta a sugerir.
 
-**🔜 Fase 2 — a agenda vira ferramenta (próxima)**
-6. **WhatsApp do agendamento:** modelo novo "Lembrete de agendamento" no `whatsapp.py`
-   + botão na linha e no detalhe (reaproveitar `menu_whatsapp` com `veiculo_pref`).
-7. **Aviso de cliente "furão"** no detalhe: contagem de `nao_compareceu` do cliente.
-8. **Aviso (sem bloquear) de mesmo veículo agendado 2x no mesmo dia** — hoje, sem box
-   preenchido, nenhuma checagem acontece.
-9. **Editar serviços/observações** de agendamento existente (hoje só remarca
-   data/box/duração; trocar serviço exige cancelar e criar de novo).
+**🔨 Fase 2 — a agenda vira ferramenta (em andamento)**
+6. ✅ **WhatsApp do agendamento (2026-07-19):** modelo novo "Lembrete de agendamento" no
+   `whatsapp.py` + botão na linha e no detalhe (`menu_whatsapp` com `veiculo_pref`).
+7. ✅ **Aviso de cliente "furão" (2026-07-20):** `historico_faltas(id_cliente)` no
+   `agendamento.py` devolve `(faltas, total)` numa passada só (`COUNT(*) FILTER`). O
+   detalhe mostra uma faixa **só quando há falta** — âmbar normalmente, **vermelha a
+   partir de 1/3 de faltas** (aí sugere confirmar por WhatsApp antes de reservar o box).
+   O total vai junto de propósito: 2 faltas em 3 vindas é alerta, 2 em 40 é vida normal.
+8. ✅ **Aviso de mesmo veículo agendado 2x no mesmo dia (2026-07-20):**
+   `agendamentos_do_veiculo_no_dia(id_veiculo, data_hora, ignorar_id=None)` — compara
+   só a DATA (`::date` dos dois lados) e só conta `STATUS_ATIVOS`, então agendamento
+   cancelado/furado não gera alarme falso. **Avisa, não bloqueia** (lavagem de manhã +
+   polimento à tarde é legítimo): a confirmação é em **dois cliques no próprio botão
+   Agendar** (1º mostra o aviso laranja, 2º grava) — de propósito, para **não abrir um
+   segundo diálogo por cima do formulário** (ver a armadilha dos diálogos do Flet 0.85).
+   Trocar o carro ou a data zera a confirmação (`limpar_avisos`).
+9. 🔜 **Editar serviços/observações** de agendamento existente (hoje só remarca
+   data/box/duração; trocar serviço exige cancelar e criar de novo). — **próximo**
 
-- **Depois disso:** Dashboard com gráficos (hoje são KPIs em cards); empacotar como
-  executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo centralizadas no topo.
+- **Depois disso:** mais gráficos no Dashboard (o 1º saiu em 2026-07-20 — "De onde vêm
+  os clientes", via `dashboard.origem_clientes()`; `horarios_pico` e
+  `servicos_mais_vendidos` já devolvem séries prontas para o mesmo estilo de barras);
+  empacotar como executável (`flet pack`); refinos de UX. `app.py` mantém a paleta/logo
+  centralizadas no topo.
+  - **Padrão de gráfico do projeto:** barras horizontais desenhadas na mão (`ft.Container`
+    com largura proporcional ao maior valor), **sem** a API de gráficos do Flet — simples,
+    sem dependência nova e imune às trocas de API da 0.85.

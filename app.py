@@ -3166,6 +3166,13 @@ def main(page: ft.Page):
                                                              color=ft.Colors.GREY_500)],
                     scroll=ft.ScrollMode.AUTO, spacing=0))
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
+            # Aviso laranja (≠ do erro vermelho): não impede de salvar, só chama
+            # a atenção. Usado quando o MESMO carro já está marcado naquele dia.
+            alerta = ft.Text("", color=ft.Colors.ORANGE_800, size=12)
+            # Confirmação em DOIS cliques em vez de abrir outro diálogo por cima
+            # (a regra do projeto é um diálogo por vez — ver CLAUDE.md): o 1º
+            # clique mostra o aviso, o 2º agenda assim mesmo.
+            confirmado = {"veiculo_dia": False}
 
             # Duração sugerida: soma dos tempos médios do catálogo (servico.
             # tempo_medio_min) conforme os serviços vão sendo marcados. Se o
@@ -3187,16 +3194,24 @@ def main(page: ft.Page):
                 page.update()
 
             # Máscaras de data/hora (mesmo padrão de Clientes/Veículos).
+            def limpar_avisos():
+                # Trocar carro ou data invalida a confirmação anterior — senão o
+                # operador confirmaria para um dia e agendaria em outro sem aviso.
+                erro.value = ""
+                alerta.value = ""
+                confirmado["veiculo_dia"] = False
+
             def mascarar(campo, funcao):
                 def _on_change(e):
                     campo.value = funcao(campo.value)
-                    erro.value = ""
+                    limpar_avisos()
                     page.update()
                 return _on_change
 
             f_data.on_change = mascarar(f_data, val.mascara_data)
             f_hora.on_change = mascarar(f_hora, val.mascara_hora)
             f_dur.on_change = digitou_duracao
+            dd_vei.on_change = lambda e: (limpar_avisos(), page.update())
             for _sid, c in chk_servicos:
                 c.on_change = sugerir_duracao
 
@@ -3231,6 +3246,24 @@ def main(page: ft.Page):
                                       f"nesse horário (#{conflitos[0][0]}).")
                         page.update(); return
 
+                # Mesmo carro já marcado nesse dia: AVISA, não bloqueia (pode ser
+                # legítimo — lavagem de manhã e polimento à tarde). Erro comum é
+                # o cliente ligar de novo esquecido, ou dois atendentes marcarem.
+                if not confirmado["veiculo_dia"]:
+                    ja_marcado = mod_ag.agendamentos_do_veiculo_no_dia(
+                        int(k_vei), quando.strftime("%Y-%m-%d %H:%M:%S"))
+                    if ja_marcado:
+                        quais = ", ".join(
+                            a[1].strftime("%H:%M") + (f" (box {a[2]})" if a[2] else "")
+                            for a in ja_marcado)
+                        erro.value = ""
+                        alerta.value = (
+                            f"Atenção: este veículo já tem agendamento em "
+                            f"{quando.strftime('%d/%m')} às {quais}. "
+                            f"Clique em Agendar de novo para marcar assim mesmo.")
+                        confirmado["veiculo_dia"] = True
+                        page.update(); return
+
                 novo = mod_ag.criar_agendamento(
                     id_cliente=id_cliente_sel, id_veiculo=int(k_vei),
                     data_hora=quando.strftime("%Y-%m-%d %H:%M:%S"),
@@ -3254,7 +3287,7 @@ def main(page: ft.Page):
                         ft.Row([f_box, dd_origem], spacing=12),
                         ft.Text("Serviços desejados", size=13, color=ft.Colors.GREY_600),
                         bloco_serv,
-                        f_obs, erro,
+                        f_obs, erro, alerta,
                     ])),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
@@ -3390,6 +3423,34 @@ def main(page: ft.Page):
                                   style=ft.ButtonStyle(color=ft.Colors.GREY_700)),
             ])
 
+            # ---- Aviso de cliente "furão" ----
+            # Quantas vezes esse cliente já deu bolo. Só aparece se houver ao
+            # menos uma falta — cliente pontual não merece tarja nenhuma. O
+            # total vai junto porque a proporção é o que importa: 2 faltas em 3
+            # vindas é sinal de alerta, 2 em 40 é normal da vida.
+            faltas, total_ag = mod_ag.historico_faltas(id_cliente)
+            if faltas:
+                proporcao = faltas / total_ag if total_ag else 0
+                # A partir de 1/3 de faltas o aviso fica vermelho: vale ligar
+                # confirmando antes de reservar o box.
+                grave = proporcao >= 0.34
+                faixa_furao = ft.Container(
+                    padding=10, border_radius=8,
+                    bgcolor=ft.Colors.RED_50 if grave else ft.Colors.AMBER_50,
+                    content=ft.Row(spacing=8, controls=[
+                        ft.Icon(ft.Icons.PERSON_OFF, size=18,
+                                color=ft.Colors.RED_700 if grave else ft.Colors.AMBER_800),
+                        ft.Text(
+                            f"Já faltou {faltas}x em {total_ag} agendamento"
+                            f"{'s' if total_ag != 1 else ''}"
+                            f" ({proporcao * 100:.0f}%)."
+                            + (" Vale confirmar por WhatsApp antes." if grave else ""),
+                            size=12, expand=True,
+                            color=ft.Colors.RED_900 if grave else ft.Colors.BROWN_800),
+                    ]))
+            else:
+                faixa_furao = ft.Container(height=0)
+
             def gerar_comanda(e):
                 # Converte o agendamento em comanda (leva cliente, veículo e serviços
                 # desejados). É a "ponte" entre a agenda e o atendimento em Comandas.
@@ -3410,6 +3471,7 @@ def main(page: ft.Page):
                         badge_status_ag(status),
                     ]),
                     linha_info("Cliente", cli_nome),
+                    faixa_furao,
                     linha_info("Veículo", placa),
                     linha_info("Box", box or "—"),
                     linha_info("Duração", f"{dur} min" if dur else "—"),

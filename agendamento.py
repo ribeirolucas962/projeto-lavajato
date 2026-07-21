@@ -78,6 +78,94 @@ def verificar_conflito(data_hora, duracao_estimada_min, box,
         conexao.close()
 
 
+def historico_faltas(id_cliente):
+    """
+    Quantas vezes o cliente já deu bolo ('nao_compareceu') e quantos
+    agendamentos ele teve no total. Serve para o aviso de "cliente furão" na
+    tela: o número sozinho engana (3 faltas em 4 vindas é bem diferente de
+    3 faltas em 50), por isso o total vai junto.
+
+    Retorna a tupla (faltas, total). Sem agendamentos, devolve (0, 0).
+    """
+    conexao = conectar()
+    if not conexao:
+        return (0, 0)
+
+    try:
+        cursor = conexao.cursor()
+        # FILTER (WHERE ...) conta só as linhas que batem, numa passada só —
+        # evita fazer duas queries pra mesma tabela.
+        cursor.execute(
+            """
+            SELECT COUNT(*) FILTER (WHERE status = 'nao_compareceu') AS faltas,
+                   COUNT(*) AS total
+            FROM agendamento
+            WHERE id_cliente = %s;
+            """,
+            (id_cliente,)
+        )
+        faltas, total = cursor.fetchone()
+        return (faltas, total)
+
+    except Exception as erro:
+        print(f"Erro ao contar faltas do cliente: {erro}")
+        return (0, 0)
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def agendamentos_do_veiculo_no_dia(id_veiculo, data_hora, ignorar_id=None):
+    """
+    Outros agendamentos ATIVOS do MESMO veículo no MESMO dia. Diferente de
+    verificar_conflito(), que só olha o box: aqui o alerta é "esse carro já
+    está marcado hoje" — acontece quando o cliente liga de novo esquecido, ou
+    quando dois atendentes marcam o mesmo carro.
+
+    É só AVISO, não bloqueio: o mesmo carro pode legitimamente voltar no dia
+    (lavagem de manhã, polimento à tarde). Quem decide é o operador.
+
+    'ignorar_id' exclui o próprio agendamento ao remarcar/editar.
+    Retorna a lista (vazia = nada marcado).
+    """
+    if not id_veiculo or not data_hora:
+        return []
+
+    conexao = conectar()
+    if not conexao:
+        return []
+
+    try:
+        cursor = conexao.cursor()
+        # ::date nos dois lados compara só o DIA, ignorando a hora.
+        query = """
+            SELECT id_agendamento, data_hora, box, status
+            FROM agendamento
+            WHERE id_veiculo = %s
+              AND status = ANY(%s)
+              AND data_hora::date = (%s)::timestamp::date
+        """
+        parametros = [id_veiculo, list(STATUS_ATIVOS), data_hora]
+
+        if ignorar_id is not None:
+            query += " AND id_agendamento <> %s"
+            parametros.append(ignorar_id)
+
+        query += " ORDER BY data_hora;"
+
+        cursor.execute(query, parametros)
+        return cursor.fetchall()
+
+    except Exception as erro:
+        print(f"Erro ao verificar veículo já agendado no dia: {erro}")
+        return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
 def criar_agendamento(id_cliente, id_veiculo, data_hora, servicos=None,
                       duracao_estimada_min=None, box=None, origem='manual',
                       observacoes=None, checar_conflito=True):
