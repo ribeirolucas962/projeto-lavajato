@@ -236,6 +236,49 @@ def horarios_pico(dias=30):
         conexao.close()
 
 
+def origem_clientes():
+    """
+    De onde vêm os clientes: conta os clientes ATIVOS por 'como_conheceu'
+    (o campo do cadastro: Indicação de amigo, Instagram, Google, Passou na
+    frente...). Retorna lista de tuplas (origem, quantidade) da MAIOR para a
+    menor — pronta para virar gráfico de barras.
+
+    - NULL ou vazio viram 'Não informado' (vira uma barra própria, o que serve
+      de lembrete pra equipe preencher o campo).
+    - Conta todos os clientes ativos (o "como conheceu" é do cliente, não de
+      cada visita); desativados — geralmente cadastro errado — ficam de fora,
+      igual ao card "Clientes ativos" do Dashboard.
+    """
+    conexao = conectar()
+    if not conexao:
+        return []
+
+    try:
+        cursor = conexao.cursor()
+        # NULLIF(TRIM(...), '') transforma string só de espaços em NULL; o
+        # COALESCE então troca o NULL pelo rótulo 'Não informado' para agrupar
+        # tudo que falta numa fatia só.
+        cursor.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(como_conheceu), ''), 'Não informado') AS origem,
+                   COUNT(*) AS qtd
+            FROM cliente
+            WHERE ativo = TRUE
+            GROUP BY origem
+            ORDER BY qtd DESC, origem;
+            """
+        )
+        return cursor.fetchall()
+
+    except Exception as erro:
+        print(f"Erro ao calcular origem dos clientes: {erro}")
+        return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
 # ================================================================
 # Teste rápido: python dashboard.py imprime todos os indicadores
 # ================================================================
@@ -247,3 +290,4 @@ if __name__ == "__main__":
     print("Taxa de retorno (90d):", taxa_retorno(90))
     print("Tempo médio (30d)...:", tempo_medio_servico(30))
     print("Horários de pico (30d):", horarios_pico(30))
+    print("Origem dos clientes.:", origem_clientes())

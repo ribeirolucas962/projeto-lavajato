@@ -883,6 +883,7 @@ def main(page: ft.Page):
         taxa = mod_dash.taxa_retorno(90)
         tempo = mod_dash.tempo_medio_servico(30)             # minutos, ou None sem dados
         horas = mod_dash.horarios_pico(30)                   # [(hora, qtd), ...]
+        origem = mod_dash.origem_clientes()                  # [(origem, qtd), ...] desc
         # Hora com mais entradas de comanda no período (None se não houve movimento).
         hora_pico = max(horas, key=lambda h: h[1])[0] if horas else None
 
@@ -918,10 +919,53 @@ def main(page: ft.Page):
             ]),
         )
 
+        # ---- Gráfico: de onde vêm os clientes (por 'como conheceu') ----
+        # Barras horizontais desenhadas na mão (Container colorido com largura
+        # proporcional) — não depende da API de gráfico do Flet. UMA cor só (é
+        # uma métrica só: contagem de clientes); "Não informado" fica CINZA por
+        # não ser um canal de verdade. O valor vai direto na ponta da barra, sem
+        # eixo nem legenda (o título já diz o que é).
+        total_origem = sum(q for _, q in origem)
+        maximo_origem = max((q for _, q in origem), default=0)
+
+        def barra_origem(rotulo, qtd):
+            # Largura ∝ maior valor (escala visual), com um mínimo pra barra
+            # pequena não sumir. Máx. 300px cabe folgado na largura do card.
+            largura = max(8, int((qtd / maximo_origem) * 300)) if maximo_origem else 8
+            cor_barra = ft.Colors.GREY_400 if rotulo == "Não informado" else COR_PRIMARIA
+            pct = f"{(qtd / total_origem * 100):.0f}%" if total_origem else "0%"
+            return ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                ft.Container(width=155, content=ft.Text(rotulo, size=13)),
+                ft.Container(width=largura, height=18, bgcolor=cor_barra, border_radius=6),
+                ft.Text(f"{qtd}  ·  {pct}", size=12, color=ft.Colors.GREY_700),
+            ])
+
+        if origem:
+            corpo_origem = ft.Column(spacing=8, controls=[
+                barra_origem(o, q) for o, q in origem])
+        else:
+            corpo_origem = ft.Text("Nenhum cliente cadastrado ainda.",
+                                   color=ft.Colors.GREY_500, italic=True)
+
+        grafico_origem = ft.Container(
+            padding=20, bgcolor=COR_CARD, border_radius=12,
+            shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)),
+            content=ft.Column(spacing=14, controls=[
+                ft.Row(spacing=10, controls=[
+                    ft.Icon(ft.Icons.INSIGHTS, color=COR_PRIMARIA),
+                    ft.Text("De onde vêm os clientes", size=16, weight=ft.FontWeight.BOLD),
+                ]),
+                ft.Text("Contagem por “como conheceu” — todos os clientes ativos",
+                        size=12, color=ft.Colors.GREY_600),
+                corpo_origem,
+            ]),
+        )
+
         return ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=20, controls=[
             cabecalho("Dashboard", f"Bem-vindo, {sessao['nome']}!"),
             kpis,
             faixa_caixa,
+            grafico_origem,
         ])
 
     # ============================================================
