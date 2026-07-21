@@ -316,6 +316,15 @@ e marca o agendamento como em_execucao). Backlog acordado, **na ordem**:
 9. 🔜 **Editar serviços/observações** de agendamento existente (hoje só remarca
    data/box/duração; trocar serviço exige cancelar e criar de novo). — **próximo**
 
+⚠️ **Pendente de conferência na tela (itens 7 e 8):** o backend das duas funções novas
+foi testado contra o banco (inclusive casos-limite: acha o agendamento das 9:00
+procurando às 15:00, `ignorar_id` funciona, `nao_compareceu` não gera alarme falso) e o
+`app.py` compila, mas **as faixas de aviso ainda não foram vistas rodando**. Para fechar:
+- **Item 7:** abrir o **agendamento #1** (cliente 1 tem 1 falta em 1 agendamento = 100%)
+  → a faixa deve sair **vermelha**, com "Vale confirmar por WhatsApp antes".
+- **Item 8:** em *Novo agendamento*, escolher o veículo do **agendamento #5** na data
+  **19/07/2026** → aviso laranja no 1º clique em Agendar, grava só no 2º.
+
 - **Depois disso:** mais gráficos no Dashboard (o 1º saiu em 2026-07-20 — "De onde vêm
   os clientes", via `dashboard.origem_clientes()`; `horarios_pico` e
   `servicos_mais_vendidos` já devolvem séries prontas para o mesmo estilo de barras);
@@ -324,3 +333,14 @@ e marca o agendamento como em_execucao). Backlog acordado, **na ordem**:
   - **Padrão de gráfico do projeto:** barras horizontais desenhadas na mão (`ft.Container`
     com largura proporcional ao maior valor), **sem** a API de gráficos do Flet — simples,
     sem dependência nova e imune às trocas de API da 0.85.
+    ✅ Conferido rodando em 2026-07-20: "Não informado" cinza (3 · 75%) e "Google" azul
+    (1 · 25%), proporções corretas.
+
+### Testar o app na tela (Windows)
+`python app.py` abre uma **janela nativa** — o processo do Python fica de pé e a janela
+é um processo separado chamado `flet` (título "Truck Center Lavação — Gestão"), que é
+por onde se acha o handle. Dá para tirar print via `System.Drawing` + `GetWindowRect`.
+⚠️ **Não use `ShowWindow(SW_RESTORE)` antes de capturar:** ele *desmaximiza* a janela e
+muda o layout no meio do teste (as coordenadas de clique viram lixo). Use só
+`SetForegroundWindow`. E o **primeiro clique depois de trazer a janela para frente é
+consumido só para dar foco** — clique duas vezes ou dê foco antes.
