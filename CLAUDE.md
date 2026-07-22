@@ -74,12 +74,12 @@ ao `DB_config` em `conexao.py`.
 |---|--------|---------|-------------|--------|
 | 1 | Cliente | `cliente` | `cadastro_cliente.py` | ✅ CRUD + ficha 360° + campanhas |
 | 2 | Veículo | `categoria_veiculo`, `veiculo` | `cadastro_veiculo.py` | ✅ CRUD feito |
-| 3 | Catálogo (serviços e preços) | `servico`, `servico_preco` | `catalogo_servicos.py` | ✅ CRUD feito |
+| 3 | Catálogo (serviços e preços) | `servico`, `servico_preco` | `catalogo_servicos.py` | ✅ CRUD + revisão 21/07 |
 | 4 | Agendamento | `agendamento`, `agendamento_servico` | `agendamento.py` | ✅ CRUD feito |
 | 5 | Ordem de Serviço (comanda) | `ordem_servico`, `ordem_servico_item` | `ordem_servico.py` | ✅ CRUD feito |
 | 6 | Funcionário | `funcionario` | `funcionario.py` | ✅ CRUD feito |
-| 7 | Estoque | `produto`, `movimentacao_estoque` | `estoque.py` | ✅ CRUD feito |
-| 8 | Fornecedores | `fornecedor` | `fornecedores.py` | ✅ CRUD feito |
+| 7 | Estoque | `produto`, `movimentacao_estoque` | `estoque.py` | ✅ CRUD + revisão 21/07 |
+| 8 | Fornecedores | `fornecedor` | `fornecedores.py` | ✅ CRUD + revisão 21/07 |
 | 9 | Despesa | `despesa` | `despesa.py` | ✅ CRUD feito |
 | 10 | Caixa | `caixa`, `caixa_movimento` | `caixa.py` | ✅ CRUD feito |
 | 11 | Dashboard | *(sem tabela — só consultas)* | `dashboard.py` | ✅ consultas feitas |
@@ -430,6 +430,18 @@ pronta ("preciso de 20 L de shampoo, 5 un de cera"), juntando Estoque + Forneced
 que já existem; contato rápido (WhatsApp/e-mail na linha, como em Clientes); ficha do fornecedor
 360°; exportar CSV.
 
+⚠️ **Pendente de conferência na tela (módulos 3, 7 e 8).** O backend das três revisões foi
+testado contra o banco (25 + 38 + 43 checks) e o `app.py` compila, mas **as telas ainda não
+foram vistas rodando** — a tentativa de 21/07 foi abortada depois do acidente do caixa (ver
+"Testar o app na tela"). Roteiro para fechar, com o operador navegando:
+- **Estoque:** "Novo produto" com nome `Shampoo Automotivo` → aviso de duplicado com o saldo
+  do existente; custo `-10` → "O custo não pode ser negativo"; **editar** o Shampoo → o
+  dropdown Fornecedor deve vir **preenchido** (era o bug do `produto[6]`).
+- **Fornecedores:** editar "Central de tolha" (CNPJ `51044074000160`, gravado **sem máscara**)
+  → o CNPJ deve se formatar ao digitar; e-mail `xyz` → erro embaixo do campo; ícone de recibo
+  na Distribuidora AutoLimp → histórico de compras com os 5 mini-cards.
+- **Serviços:** a coluna Preços deve mostrar a **faixa** ("3 porte(s) · R$ 20,00 a R$ 55,50").
+
 ### Dívidas estruturais do projeto (levantadas em 2026-07-21, nada feito)
 Diagnóstico pedido pelo Lucas ("esse sistema foi bem estruturado certo?"). Resumo: **a dívida
 está toda na camada de cima** — banco e backend, que são a parte cara, estão certos; por isso
@@ -469,3 +481,17 @@ por onde se acha o handle. Dá para tirar print via `System.Drawing` + `GetWindo
 muda o layout no meio do teste (as coordenadas de clique viram lixo). Use só
 `SetForegroundWindow`. E o **primeiro clique depois de trazer a janela para frente é
 consumido só para dar foco** — clique duas vezes ou dê foco antes.
+
+⚠️ **A janela MUDA DE TAMANHO sozinha no login** (aprendido na marra em 2026-07-21):
+abre em ~1180x740 e **maximiza para o tamanho da tela depois de entrar**. Ela também
+**minimiza sozinha ao perder o foco** (aí `GetWindowRect` devolve `-32000,-32000`, que é
+o "endereço" de janela minimizada no Windows — se capturar assim, o print sai com 160x28).
+Receita segura: **reconferir o rect a cada passo** (`IsIconic` → se minimizada,
+`ShowWindow(h, 3)` = maximizar, nunca 9/RESTORE) e **tirar print ANTES de cada clique**
+para confirmar o alvo.
+
+🚨 **Clicar às cegas mexe em dados de verdade.** Em 21/07 um clique com coordenada velha
+(calculada sobre a janela pequena, depois que ela já tinha maximizado) caiu no botão
+"Abrir caixa" e **criou o caixa #5 no banco** — teve de ser apagado na mão. O app não
+tem modo de teste: **toda tela grava no banco real do TrueNAS.** Para conferência visual,
+o caminho barato e sem risco é o operador navegar e o assistente só capturar a tela.
