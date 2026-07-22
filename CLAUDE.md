@@ -325,6 +325,131 @@ procurando às 15:00, `ignorar_id` funciona, `nao_compareceu` não gera alarme f
 - **Item 8:** em *Novo agendamento*, escolher o veículo do **agendamento #5** na data
   **19/07/2026** → aviso laranja no 1º clique em Agendar, grava só no 2º.
 
+### Módulo 3 (Catálogo de Serviços) — bugs corrigidos em 2026-07-21
+Revisão do módulo achou 4 defeitos, todos corrigidos e testados contra o banco:
+1. **`editar_servico()` migrado de COALESCE para o sentinela `MANTER`** — era o mesmo
+   bug já corrigido em cliente/veículo/agendamento: limpar a descrição (ou o tempo médio)
+   e salvar trazia o valor velho de volta. Agora campo não passado = não mexe; passado
+   como `None` = apaga. `nome` (NOT NULL) é ignorado se vier vazio.
+2. **Nome duplicado avisa com jeitinho** — `servico.nome` é UNIQUE, então o INSERT
+   estourava no banco e a tela só dizia "não foi possível salvar". Nova
+   `buscar_servico_por_nome()` (normaliza espaços e caixa via `BTRIM(...) ILIKE`, traz
+   **inativos** também) checada antes de gravar; se o serviço existente estiver inativo,
+   a mensagem manda marcar "Incluir inativos" para reativá-lo.
+3. **Fim do "sucesso" falso ao salvar preços** — a tela ignorava o retorno de
+   `definir_preco`/`remover_preco` e dizia "Preços atualizados" mesmo quando o banco
+   recusava (a tabela tem `CHECK (preco >= 0)`, e nada impedia digitar `-10`). Agora o
+   negativo é barrado na validação da tela, `definir_preco()` também recusa valor
+   negativo/não numérico **antes** de abrir conexão, e o salvar acumula as falhas e
+   nomeia os portes que não gravaram. Tempo médio ficou limitado a 1–1440 min
+   (`tempo_medio_min` é SMALLINT).
+4. **Fim do N+1 na lista** — `montar_linhas()` chamava `precos_do_servico()` dentro do
+   laço (1 + N conexões ao banco **a cada tecla** digitada na busca, que refaz a lista no
+   `on_change`). Nova `resumo_precos(apenas_ativos=)` traz `{id_servico: (qtd, mín, máx)}`
+   numa consulta só; de quebra a coluna Preços agora mostra a **faixa** praticada
+   ("3 porte(s) · R$ 20,00 a R$ 55,50") em vez de só a contagem.
+
+**Ideias levantadas e ainda não feitas** (por ordem de retorno): reajuste de preços em
+massa (%/valor, com prévia — hoje um aumento anual é redigitar serviço × porte na mão);
+tela "Tabela de preços" usando a `tabela_de_precos()`, que está pronta no backend e
+**nunca foi usada** (vira a tabela da casa, exportável/imprimível); ficha do serviço 360°
+(vendas, faturamento e **tempo real médio × `tempo_medio_min` cadastrado** — se o
+cadastrado mentir, a agenda estoura o dia); duplicar serviço copiando a matriz de preços;
+exportar CSV (Clientes e Veículos já têm); filtro "sem preço definido".
+
+### Módulo 7 (Estoque) — bugs corrigidos em 2026-07-21
+A base do módulo já era boa (entrada/saída atualizam saldo + histórico na mesma transação,
+e a saída usa `SELECT ... FOR UPDATE` contra condição de corrida). A revisão achou 6 defeitos
++ 1 extra, todos corrigidos e testados contra o banco (38 checks):
+1. **`editar_produto()` migrado de COALESCE para o sentinela `MANTER`** — quinto módulo com
+   o mesmo bug. Sintoma visível: escolher **"(nenhum)"** no fornecedor **não desvinculava**,
+   e limpar a unidade de medida trazia o valor velho de volta.
+2. **Valores negativos barrados** — `quantidade` e `estoque_minimo` **não têm CHECK** no
+   Postgres (só `custo_unitario`/`preco_venda` têm), então dava para cadastrar produto
+   nascendo com saldo negativo. Novo helper `_numero_valido()` valida **antes de abrir
+   conexão**, e a tela valida antes de chamar o backend (mensagem específica por campo).
+3. **Saldo inicial agora vira movimentação** — `inserir_produto()` grava uma entrada
+   "Saldo inicial do cadastro" na **mesma transação**. Antes o produto nascia com saldo e
+   histórico vazio: a soma das movimentações nunca batia com `produto.quantidade`.
+4. **Produto duplicado avisa** — `produto.nome` **não é UNIQUE** (diferente de `servico.nome`),
+   então dois "Shampoo Automotivo" dividiam o estoque real em dois cadastros e o alerta de
+   mínimo não disparava em nenhum. Nova `buscar_produto_por_nome()` (normaliza espaços/caixa
+   com `BTRIM(...) ILIKE`, traz inativos) checada antes de gravar; a mensagem mostra o saldo
+   do existente e manda usar Entrada nele.
+5. **Fim da 2ª consulta por tecla digitada** — `montar_linhas()` chamava
+   `produtos_abaixo_minimo()` além do `buscar_produtos()`; agora o "está no vermelho?" é
+   calculado em Python (`quantidade <= mínimo`) com os dados que a lista já trouxe. De quebra
+   some um bug: aquela consulta só devolvia **ativos**, então com "Incluir inativos" marcado
+   o produto inativo em falta aparecia **sem o alerta vermelho**.
+6. **Coluna `preco_venda` deixou de ser órfã** — existia no schema (com comentário "venda de
+   balcão") e **nenhuma linha do projeto lia ou escrevia nela**. Agora entra no CRUD (campo no
+   formulário + coluna "Venda" na lista, "—" quando zerada). A venda de balcão em si continua
+   não implementada — o dado só passou a ser cadastrável.
+7. **Extra achado na revisão:** o dropdown de fornecedor lia `produto[6]`, que é o **nome**
+   do fornecedor, não o id — na edição ele vinha em branco. Corrigido com `p.id_fornecedor`
+   acrescentado **no fim** do SELECT (índice 9; `preco_venda` no 8 — índices antigos intactos).
+
+**Ideias levantadas e ainda não feitas** (por ordem de retorno): baixa automática de produto
+ao lançar o serviço na comanda (é o "vincular consumo a serviços" da documentação — hoje a
+saída é 100% manual, então na prática o saldo vira ficção); gerar despesa ao dar entrada
+(mesma ponte da Comanda→Caixa); ficha do produto 360° (consumo médio/mês e "dura mais ~N dias",
+que transforma o estoque mínimo num número pensado em vez de chute); card "dinheiro parado em
+estoque" (Σ qtd × custo) + filtro "só os em falta"; movimentação do tipo **ajuste de inventário**
+(hoje a contagem física vira uma "saída" mentirosa — exige mexer no `CHECK (tipo IN ...)`);
+exportar CSV.
+
+### Módulo 8 (Fornecedores) — bugs corrigidos em 2026-07-21
+Era o módulo mais simples (CRUD puro + produtos vinculados) e justamente por isso ficou para
+trás: enquanto Clientes ganhou máscara, validação e WhatsApp, aqui **nada disso tinha chegado**.
+5 defeitos corrigidos e testados contra o banco (43 checks):
+1. **`editar_fornecedor()` migrado de COALESCE para o sentinela `MANTER`** — sexto módulo com
+   o mesmo bug: não dava para **apagar** telefone, e-mail, CNPJ nem condições de pagamento.
+2. **CNPJ duplicado avisa com jeitinho** — `fornecedor.cnpj` é UNIQUE, então o INSERT estourava
+   no banco e a tela só dizia "não foi possível salvar". Nova `buscar_fornecedor_por_cnpj()`
+   compara **só os dígitos** dos dois lados (`regexp_replace(cnpj, '[^0-9]', '', 'g')`), então
+   acha o cadastro antigo digitado sem máscara; traz **inativos** também.
+3. **Máscara e validação na tela** (o mais visível) — a tela não usava **nada** do
+   `validadores.py`, que já estava pronto e em uso em Clientes: dava para salvar CNPJ "abc",
+   e-mail "xyz" e telefone "123". Agora CNPJ e telefone se formatam ao digitar
+   (`mascara_cpf_cnpj`/`mascara_telefone`) e CNPJ (dígito verificador), e-mail e telefone são
+   validados no salvar, com o erro embaixo do campo (`error=ft.Text(...)`, nunca `error_text`).
+   Campo vazio segue válido — tudo aqui é opcional.
+4. **Aviso ao desativar fornecedor com produtos vinculados** — nova
+   `contar_produtos_vinculados()` devolve `(ativos, total)` numa passada só (`COUNT FILTER`,
+   mesmo padrão do `historico_faltas`). Antes o fornecedor sumia da lista em silêncio e, na
+   hora de repor o estoque, ninguém lembrava que ele fora desativado. **Avisa, não bloqueia.**
+5. **Histórico de compras — lacuna da própria especificação** ("consultar histórico de compras
+   por fornecedor", nunca implementado, embora `despesa.id_fornecedor` já existisse e fosse
+   preenchido). Nova `compras_do_fornecedor()` devolve `{'resumo', 'despesas'}` com qtd, total,
+   **total pago × total em aberto** (`SUM FILTER` por `data_pagamento IS NULL`) e última compra;
+   novo diálogo na tela (ícone `RECEIPT_LONG`) com os 5 mini-cards + a lista das 20 últimas.
+
+**Ideias levantadas e ainda não feitas** (por ordem de retorno): **lista de compras + pedido por
+WhatsApp** — abrir os produtos do fornecedor destacando os abaixo do mínimo e montar a mensagem
+pronta ("preciso de 20 L de shampoo, 5 un de cera"), juntando Estoque + Fornecedor + WhatsApp,
+que já existem; contato rápido (WhatsApp/e-mail na linha, como em Clientes); ficha do fornecedor
+360°; exportar CSV.
+
+### Dívidas estruturais do projeto (levantadas em 2026-07-21, nada feito)
+Diagnóstico pedido pelo Lucas ("esse sistema foi bem estruturado certo?"). Resumo: **a dívida
+está toda na camada de cima** — banco e backend, que são a parte cara, estão certos; por isso
+dá para refatorar depois sem redesenhar nada.
+1. **`app.py` com 5.102 linhas** (45% das 11.442 do projeto), com as 13 telas como funções
+   aninhadas dentro de um único `main()`. Sai aos pedaços para uma pasta `telas/`, depois de
+   extrair o que é compartilhado (`page`, `sucesso`/`aviso`, `abrir_dialog`, paleta) para um
+   `ui_comum.py`. **Custo não cresce com o tempo.**
+2. **Telas leem o banco por posição na tupla** (`c[0]`, `p[3]`) — é a origem da regra "colunas
+   novas entram no FIM do SELECT". Cura: `RealDictCursor` (vira `p["nome"]`), módulo por módulo.
+   ⚠️ **É a única cujo custo cresce a cada tela nova.**
+3. **Erros viram `print()` e somem** — a função devolve `False`/`None` e o motivo fica no
+   terminal; por isso as telas só conseguem dizer "Não foi possível salvar". É o que está por
+   trás de boa parte dos bugs corrigidos em Serviços e Estoque.
+   *Menores:* uma conexão nova por chamada (~135 funções, sem pool) e testes como blocos
+   `if __name__ == "__main__"` que escrevem no banco real, sem pytest nem banco de teste.
+
+**Decisão:** seguir com funcionalidades agora; atacar as dívidas 1 e 2 depois do `flet pack`,
+e melhorar as mensagens de erro (dívida 3) de carona nos módulos que forem sendo mexidos.
+
 - **Depois disso:** mais gráficos no Dashboard (o 1º saiu em 2026-07-20 — "De onde vêm
   os clientes", via `dashboard.origem_clientes()`; `horarios_pico` e
   `servicos_mais_vendidos` já devolvem séries prontas para o mesmo estilo de barras);

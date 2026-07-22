@@ -15,6 +15,11 @@ sem alterar o schema quando surge um porte novo.
 
 from conexao import conectar
 
+# Sentinela do editar_servico (mesma ideia de cadastro_cliente/cadastro_veiculo/agendamento):
+# campo NÃO passado = mantém como está; campo passado como None = apaga (grava NULL).
+# O COALESCE antigo tornava impossível apagar a descrição ou o tempo médio.
+MANTER = object()
+
 
 # ================================================================
 # CRUD DE SERVIÇO
@@ -123,28 +128,98 @@ def buscar_servico_por_id(id_servico):
         conexao.close()
 
 
-def editar_servico(id_servico, nome=None, descricao=None, tempo_medio_min=None):
+def buscar_servico_por_nome(nome):
+    """
+    Procura um serviço pelo nome EXATO (ignora maiúsc/minúsc e espaços sobrando, então
+    '  lavagem simples ' acha 'Lavagem Simples'). Serve pra avisar, ANTES de tentar
+    cadastrar, que o nome já existe — a coluna servico.nome é UNIQUE, então o banco
+    recusaria o INSERT de qualquer jeito; melhor avisar com jeitinho.
+
+    Traz também serviços inativos (o nome continua ocupado mesmo desativado — e é o
+    caso mais confuso pro operador, porque o serviço nem aparece na lista).
+    Retorna a tupla (id_servico, nome, descricao, tempo_medio_min, ativo),
+    ou None se ninguém usa esse nome.
+    """
+    conexao = conectar()
+    if not conexao:
+        return None
+
+    nome_limpo = " ".join((nome or "").split())   # tira espaços duplos e das pontas
+    if not nome_limpo:
+        conexao.close()
+        return None
+
+    try:
+        cursor = conexao.cursor()
+        # Normaliza dos dois lados: BTRIM tira os espaços do que está gravado e o
+        # ILIKE (sem % nenhum) compara o texto inteiro ignorando maiúsc/minúsc.
+        cursor.execute(
+            """
+            SELECT id_servico, nome, descricao, tempo_medio_min, ativo
+            FROM servico
+            WHERE BTRIM(nome) ILIKE %s
+            LIMIT 1;
+            """,
+            (nome_limpo,)
+        )
+        return cursor.fetchone()
+
+    except Exception as erro:
+        print(f"Erro ao buscar serviço por nome: {erro}")
+        return None
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def editar_servico(id_servico, nome=MANTER, descricao=MANTER, tempo_medio_min=MANTER):
     """
     Atualiza os dados de um serviço existente.
-    Apenas os campos informados (diferentes de None) são atualizados.
-    Retorna True se a atualização foi bem-sucedida, False caso contrário.
+
+    Campo que você NÃO passar fica como está (o padrão é o sentinela MANTER).
+    Campo passado como None é APAGADO (vira NULL no banco). Era isso que o COALESCE
+    antigo impedia: limpar a descrição/tempo médio e salvar trazia o valor velho de
+    volta — mesmo bug já corrigido em cliente, veículo e agendamento.
+
+    Exceção (coluna NOT NULL): 'nome' não pode virar NULL. Se vier vazio/None, é
+    simplesmente ignorado (em vez de estourar erro no Postgres).
+
+    Retorna True se alguma linha foi atualizada, False caso contrário.
     """
     conexao = conectar()
     if not conexao:
         return False
 
+    # Monta o SET dinamicamente: só entram na query os campos realmente enviados.
+    # Os NOMES das colunas vêm daqui de dentro (nunca do usuário) e os VALORES seguem
+    # como %s — continua sem risco de SQL injection.
+    campos = {
+        "nome": nome,
+        "descricao": descricao,
+        "tempo_medio_min": tempo_medio_min,
+    }
+    partes, valores = [], []
+    for coluna, valor in campos.items():
+        if valor is MANTER:
+            continue                                 # não foi enviado -> não mexe
+        if coluna == "nome" and not valor:
+            continue                                 # NOT NULL: nunca apaga
+        partes.append(f"{coluna} = %s")
+        valores.append(valor)
+
+    if not partes:
+        conexao.close()
+        return False   # ninguém pediu mudança nenhuma
+
+    partes.append("atualizado_em = NOW()")
+    valores.append(id_servico)
+
     try:
         cursor = conexao.cursor()
         cursor.execute(
-            """
-            UPDATE servico
-            SET nome = COALESCE(%s, nome),
-                descricao = COALESCE(%s, descricao),
-                tempo_medio_min = COALESCE(%s, tempo_medio_min),
-                atualizado_em = NOW()
-            WHERE id_servico = %s;
-            """,
-            (nome, descricao, tempo_medio_min, id_servico)
+            f"UPDATE servico SET {', '.join(partes)} WHERE id_servico = %s;",
+            valores
         )
         conexao.commit()
         return cursor.rowcount > 0
@@ -224,6 +299,17 @@ def definir_preco(id_servico, id_categoria, preco):
     Faz UPSERT: insere se não existir, atualiza se já existir.
     Retorna True em caso de sucesso, False caso contrário.
     """
+    # Barra o preço inválido aqui: a tabela tem CHECK (preco >= 0), então um valor
+    # negativo viraria erro do Postgres no meio do laço de quem chama. Recusando
+    # antes, quem chama recebe um False limpo e sabe que nada foi gravado.
+    try:
+        if preco is None or float(preco) < 0:
+            print(f"Erro ao definir preço: valor inválido ({preco!r}) — deve ser >= 0.")
+            return False
+    except (TypeError, ValueError):
+        print(f"Erro ao definir preço: valor não numérico ({preco!r}).")
+        return False
+
     conexao = conectar()
     if not conexao:
         return False
@@ -342,6 +428,44 @@ def precos_do_servico(id_servico):
     except Exception as erro:
         print(f"Erro ao buscar preços do serviço: {erro}")
         return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def resumo_precos(apenas_ativos=True):
+    """
+    Resumo dos preços de TODOS os serviços numa consulta só.
+    Retorna um dict {id_servico: (quantidade_de_portes, preco_minimo, preco_maximo)}.
+
+    Existe para a lista de serviços da interface não chamar precos_do_servico()
+    dentro do laço: eram 1 + N conexões ao banco (uma por linha da tabela) a cada
+    tecla digitada na busca. Serviço sem preço nenhum simplesmente não aparece no
+    dict — quem lê usa .get(id, (0, None, None)).
+    """
+    conexao = conectar()
+    if not conexao:
+        return {}
+
+    try:
+        cursor = conexao.cursor()
+        query = """
+            SELECT sp.id_servico, COUNT(*), MIN(sp.preco), MAX(sp.preco)
+            FROM servico_preco sp
+            JOIN servico s ON s.id_servico = sp.id_servico
+            WHERE 1=1
+        """
+        if apenas_ativos:
+            query += " AND s.ativo = TRUE"
+        query += " GROUP BY sp.id_servico;"
+
+        cursor.execute(query)
+        return {linha[0]: (linha[1], linha[2], linha[3]) for linha in cursor.fetchall()}
+
+    except Exception as erro:
+        print(f"Erro ao resumir preços: {erro}")
+        return {}
 
     finally:
         cursor.close()

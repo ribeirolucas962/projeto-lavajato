@@ -1571,19 +1571,24 @@ def main(page: ft.Page):
 
         def montar_linhas():
             termo = (campo_busca.value or "").strip() or None
-            servicos = mod_serv.buscar_servicos(
-                termo=termo, apenas_ativos=not mostrar_inativos.value)
+            apenas_ativos = not mostrar_inativos.value
+            servicos = mod_serv.buscar_servicos(termo=termo, apenas_ativos=apenas_ativos)
             if not servicos:
                 return ft.Container(
                     padding=30, alignment=ft.Alignment.CENTER,
                     content=ft.Text("Nenhum serviço encontrado.", color=ft.Colors.GREY_500))
+            # Preços de TODOS os serviços numa consulta só. Antes era um
+            # precos_do_servico() por linha (1 + N conexões ao banco) — e como a busca
+            # refaz a lista a cada tecla, isso engasgava a tela.
+            resumo = mod_serv.resumo_precos(apenas_ativos=apenas_ativos)
             linhas = []
             for s in servicos:
                 # Tupla = SELECT de catalogo_servicos.buscar_servicos().
                 (ids, nome, descricao, tempo, ativo) = s
                 # Quantos portes já têm preço definido (0 = serviço não pode ser
-                # cobrado ainda; a badge fica vermelha para chamar atenção).
-                n_precos = len(mod_serv.precos_do_servico(ids))
+                # cobrado ainda; a badge fica vermelha para chamar atenção) e a faixa
+                # de valores praticada (menor porte -> maior porte).
+                n_precos, preco_min, preco_max = resumo.get(ids, (0, None, None))
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                     bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
@@ -1598,12 +1603,18 @@ def main(page: ft.Page):
                                          tooltip="Reativar",
                                          on_click=lambda e, i=ids: feedback_acao(mod_serv.reativar_servico(i), "Serviço reativado.", atualizar))
                 cor_precos = ft.Colors.GREEN_700 if n_precos else ft.Colors.RED_500
+                if not n_precos:
+                    txt_precos = "sem preço"
+                elif preco_min == preco_max:
+                    txt_precos = f"{n_precos} porte(s) · {brl(preco_min)}"
+                else:
+                    txt_precos = f"{n_precos} porte(s) · {brl(preco_min)} a {brl(preco_max)}"
                 linhas.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(str(ids))),
                     ft.DataCell(ft.Text(nome or "")),
                     ft.DataCell(ft.Text(descricao or "—")),
                     ft.DataCell(ft.Text(f"{tempo} min" if tempo else "—")),
-                    ft.DataCell(ft.Text(f"{n_precos} porte(s)", color=cor_precos, size=12)),
+                    ft.DataCell(ft.Text(txt_precos, color=cor_precos, size=12)),
                     ft.DataCell(badge),
                     ft.DataCell(ft.Row(spacing=0, controls=[
                         ft.IconButton(ft.Icons.ATTACH_MONEY, icon_color=COR_ACENTO,
@@ -1666,20 +1677,40 @@ def main(page: ft.Page):
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
-                if not (f_nome.value or "").strip():
+                nome_novo = " ".join((f_nome.value or "").split())
+                if not nome_novo:
                     erro_form.value = "O nome é obrigatório."
                     page.update(); return
                 tempo_txt = (f_tempo.value or "").strip()
                 if tempo_txt and not tempo_txt.isdigit():
                     erro_form.value = "Tempo médio deve ser um número (minutos)."
                     page.update(); return
+                # tempo_medio_min é SMALLINT no banco (máx. 32767) — 1440 min = 1 dia
+                # inteiro, mais que isso é dedo escorregando no teclado.
+                if tempo_txt and not (0 < int(tempo_txt) <= 1440):
+                    erro_form.value = "Tempo médio deve ser entre 1 e 1440 minutos (24h)."
+                    page.update(); return
+                # servico.nome é UNIQUE: sem esta checagem o INSERT estouraria no banco
+                # e a tela só diria "não foi possível salvar". Pior quando o serviço
+                # existente está INATIVO — ele nem aparece na lista, e o operador fica
+                # sem entender por que o nome "está em uso".
+                existente = mod_serv.buscar_servico_por_nome(nome_novo)
+                if existente and (not editando or existente[0] != servico[0]):
+                    situacao = ("" if existente[4]
+                                else " — ele está inativo; marque \"Incluir inativos\" "
+                                     "na lista para reativá-lo")
+                    erro_form.value = (f"Já existe o serviço \"{existente[1]}\"{situacao}.")
+                    page.update(); return
                 tempo_val = int(tempo_txt) if tempo_txt else None
                 desc = (f_desc.value or "").strip() or None
                 if editando:
-                    ok = mod_serv.editar_servico(servico[0], nome=f_nome.value.strip(),
+                    # descricao/tempo como None APAGAM o valor (editar_servico usa o
+                    # sentinela MANTER, não mais COALESCE) — é o que se espera de quem
+                    # limpou o campo de propósito.
+                    ok = mod_serv.editar_servico(servico[0], nome=nome_novo,
                                                  descricao=desc, tempo_medio_min=tempo_val)
                 else:
-                    ok = mod_serv.inserir_servico(f_nome.value.strip(), descricao=desc,
+                    ok = mod_serv.inserir_servico(nome_novo, descricao=desc,
                                                   tempo_medio_min=tempo_val) is not None
                 fechar_dialog()
                 if ok:
@@ -1712,6 +1743,7 @@ def main(page: ft.Page):
             precos_atuais = {cat_id: preco
                              for (cat_id, _cat_nome, preco) in mod_serv.precos_do_servico(id_servico)}
             campos = {}  # id_categoria -> TextField (para ler os valores no salvar)
+            nomes_categoria = {c[0]: c[1] for c in categorias}  # p/ nomear falhas no aviso
             linhas_precos = []
             for (cat_id, cat_nome, _ordem) in categorias:
                 atual = precos_atuais.get(cat_id)
@@ -1735,20 +1767,36 @@ def main(page: ft.Page):
                         novos[cat_id] = None  # vazio = marcar para remover
                         continue
                     try:
-                        novos[cat_id] = float(txt)
+                        valor = float(txt)
                     except ValueError:
                         erro_form.value = "Preços devem ser números (ex.: 35,00)."
                         page.update(); return
+                    # A tabela tem CHECK (preco >= 0): sem esta checagem o banco
+                    # recusava o valor negativo em silêncio e a tela mesmo assim
+                    # dizia "Preços atualizados" — mentira na cara do operador.
+                    if valor < 0:
+                        erro_form.value = "Preço não pode ser negativo."
+                        page.update(); return
+                    novos[cat_id] = valor
                 # 2ª passada: grava. Só remove o que já existia (evita DELETE à toa).
+                # Guarda quem falhou para avisar em vez de comemorar por engano.
+                falhas = []
                 for cat_id, val in novos.items():
                     if val is None:
                         if cat_id in precos_atuais:
-                            mod_serv.remover_preco(id_servico, cat_id)
+                            if not mod_serv.remover_preco(id_servico, cat_id):
+                                falhas.append(nomes_categoria.get(cat_id, str(cat_id)))
                     else:
-                        mod_serv.definir_preco(id_servico, cat_id, val)  # upsert
+                        if not mod_serv.definir_preco(id_servico, cat_id, val):  # upsert
+                            falhas.append(nomes_categoria.get(cat_id, str(cat_id)))
                 fechar_dialog()
                 atualizar()
-                sucesso("Preços atualizados.")
+                if falhas:
+                    aviso("Erro ao salvar preços",
+                          "Não foi possível gravar o preço de: " + ", ".join(falhas) +
+                          ".\nOs demais foram salvos. Verifique a conexão com o banco.")
+                else:
+                    sucesso("Preços atualizados.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
@@ -2383,9 +2431,11 @@ def main(page: ft.Page):
             termo = (campo_busca.value or "").strip() or None
             produtos = mod_estoque.buscar_produtos(
                 termo=termo, apenas_ativos=not mostrar_inativos.value)
-            # Conjunto de ids no vermelho, para marcar cada linha em O(1) (evita
-            # consultar "abaixo do mínimo" produto a produto dentro do loop).
-            abaixo = {p[0] for p in mod_estoque.produtos_abaixo_minimo()}
+            # "Está no vermelho?" é calculado aqui mesmo (quantidade <= mínimo), com
+            # os dados que a lista JÁ trouxe. Antes isso custava uma segunda ida ao
+            # banco a cada tecla digitada na busca — e, pior, aquela consulta só
+            # devolvia produtos ATIVOS: com "Incluir inativos" marcado, um produto
+            # inativo em falta aparecia sem o alerta vermelho.
             if not produtos:
                 return ft.Container(
                     padding=30, alignment=ft.Alignment.CENTER,
@@ -2393,8 +2443,12 @@ def main(page: ft.Page):
             linhas = []
             for p in produtos:
                 # Tupla = SELECT de estoque.buscar_produtos().
-                (idp, nome, unidade, qtd, minimo, custo, forn_nome, ativo) = p
-                critico = idp in abaixo   # True = quantidade <= estoque mínimo
+                (idp, nome, unidade, qtd, minimo, custo, forn_nome, ativo,
+                 venda, id_forn) = p
+                try:
+                    critico = float(qtd) <= float(minimo or 0)
+                except (TypeError, ValueError):
+                    critico = False
                 badge = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                     bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
@@ -2422,6 +2476,9 @@ def main(page: ft.Page):
                     ft.DataCell(cel_qtd),
                     ft.DataCell(ft.Text(qtd_fmt(minimo))),
                     ft.DataCell(ft.Text(brl(custo) if custo is not None else "—")),
+                    # Preço de venda só faz sentido para o que é revendido no balcão
+                    # (aromatizante, cera); insumo de uso interno fica zerado -> "—".
+                    ft.DataCell(ft.Text(brl(venda) if venda and float(venda) > 0 else "—")),
                     ft.DataCell(ft.Text(forn_nome or "—")),
                     ft.DataCell(badge),
                     ft.DataCell(ft.Row(spacing=0, controls=[
@@ -2445,6 +2502,7 @@ def main(page: ft.Page):
                     ft.DataColumn(ft.Text("Quantidade")),
                     ft.DataColumn(ft.Text("Mínimo")),
                     ft.DataColumn(ft.Text("Custo unit.")),
+                    ft.DataColumn(ft.Text("Venda")),
                     ft.DataColumn(ft.Text("Fornecedor")),
                     ft.DataColumn(ft.Text("Status")),
                     ft.DataColumn(ft.Text("Ações")),
@@ -2496,11 +2554,17 @@ def main(page: ft.Page):
             f_custo = ft.TextField(label="Custo unitário", width=180, prefix=ft.Text("R$ "),
                                    value=(f"{float(produto[5]):.2f}".replace('.', ',')
                                           if editando and produto[5] is not None else ""))
+            f_venda = ft.TextField(label="Preço de venda", width=180, prefix=ft.Text("R$ "),
+                                   helper=ft.Text("Só se for revendido ao cliente"),
+                                   value=(f"{float(produto[8]):.2f}".replace('.', ',')
+                                          if editando and produto[8] else ""))
+            # produto[9] é o id_fornecedor. Antes usava produto[6], que é o NOME do
+            # fornecedor — o dropdown não achava a opção e vinha em branco na edição.
             dd_forn = ft.Dropdown(
                 label="Fornecedor", width=440,
                 options=[ft.dropdown.Option(key="", text="(nenhum)")]
                         + [ft.dropdown.Option(key=str(fo[0]), text=fo[1]) for fo in fornecedores],
-                value=str(produto[6]) if editando and produto[6] else "")
+                value=str(produto[9]) if editando and produto[9] else "")
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def num_or(txt, padrao=None):
@@ -2513,37 +2577,71 @@ def main(page: ft.Page):
                     return None, False
 
             def salvar(e):
-                if not (f_nome.value or "").strip():
+                nome_novo = " ".join((f_nome.value or "").split())
+                if not nome_novo:
                     erro_form.value = "O nome é obrigatório."
                     page.update(); return
                 minimo, ok1 = num_or(f_min.value, 0)
                 custo, ok2 = num_or(f_custo.value, None)
-                if not (ok1 and ok2):
-                    erro_form.value = "Mínimo e custo devem ser números."
+                venda, ok4 = num_or(f_venda.value, None)
+                if not (ok1 and ok2 and ok4):
+                    erro_form.value = "Mínimo, custo e preço de venda devem ser números."
                     page.update(); return
+                # O banco só tem CHECK em custo/preço de venda; quantidade e mínimo
+                # aceitariam negativo em silêncio e o estoque nasceria no vermelho.
+                for valor, rotulo in ((minimo, "O estoque mínimo"), (custo, "O custo"),
+                                      (venda, "O preço de venda")):
+                    if valor is not None and valor < 0:
+                        erro_form.value = f"{rotulo} não pode ser negativo."
+                        page.update(); return
+
+                # produto.nome NÃO é UNIQUE no banco: dois "Shampoo Automotivo" dividiriam
+                # o estoque real em dois cadastros e o alerta de mínimo não dispararia em
+                # nenhum. Avisamos antes de gravar (na edição, ignora o próprio produto).
+                existente = mod_estoque.buscar_produto_por_nome(nome_novo)
+                if existente and not (editando and existente[0] == produto[0]):
+                    saldo = f"{qtd_fmt(existente[3])} {existente[2] or ''}".strip()
+                    if existente[4]:
+                        erro_form.value = (f"Já existe o produto \"{existente[1]}\" "
+                                           f"(#{existente[0]}, saldo {saldo}). "
+                                           "Use Entrada nele em vez de cadastrar de novo.")
+                    else:
+                        erro_form.value = (f"Já existe \"{existente[1]}\" (#{existente[0]}), "
+                                           "mas está INATIVO. Marque \"Incluir inativos\" "
+                                           "na lista para reativá-lo.")
+                    page.update(); return
+
                 k_forn = dd_key(dd_forn)
                 id_forn = int(k_forn) if k_forn else None
                 if editando:
+                    # Campo limpo agora APAGA de verdade (sentinela MANTER no backend):
+                    # escolher "(nenhum)" no fornecedor finalmente desvincula.
                     ok = mod_estoque.editar_produto(
-                        produto[0], nome=f_nome.value.strip(),
+                        produto[0], nome=nome_novo,
                         unidade_medida=(f_un.value or "").strip() or None,
-                        estoque_minimo=minimo, custo_unitario=custo, id_fornecedor=id_forn)
+                        estoque_minimo=minimo, custo_unitario=custo,
+                        id_fornecedor=id_forn, preco_venda=venda)
                 else:
                     qtd_ini, ok3 = num_or(f_qtd.value, 0)
                     if not ok3:
                         erro_form.value = "Quantidade inicial deve ser um número."
                         page.update(); return
+                    if qtd_ini is not None and qtd_ini < 0:
+                        erro_form.value = "A quantidade inicial não pode ser negativa."
+                        page.update(); return
                     ok = mod_estoque.inserir_produto(
-                        nome=f_nome.value.strip(),
+                        nome=nome_novo,
                         unidade_medida=(f_un.value or "").strip() or None,
                         quantidade=qtd_ini or 0, estoque_minimo=minimo or 0,
-                        custo_unitario=custo or 0, id_fornecedor=id_forn) is not None
+                        custo_unitario=custo or 0, id_fornecedor=id_forn,
+                        preco_venda=venda or 0) is not None
                 fechar_dialog()
                 if ok:
                     atualizar()
                     sucesso("Produto atualizado." if editando else "Produto cadastrado.")
                 else:
-                    aviso("Erro", "Não foi possível salvar o produto.")
+                    aviso("Erro", "Não foi possível salvar o produto. "
+                                  "Confira os valores e a conexão com o banco.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
@@ -2553,6 +2651,7 @@ def main(page: ft.Page):
                     f_nome,
                     ft.Row([f_un, f_qtd], spacing=20),
                     ft.Row([f_min, f_custo], spacing=20),
+                    f_venda,
                     dd_forn, erro_form,
                 ])),
                 actions=[
@@ -3802,6 +3901,9 @@ def main(page: ft.Page):
                         ft.IconButton(ft.Icons.INVENTORY_2, icon_color=COR_ACENTO,
                                       tooltip="Produtos vinculados",
                                       on_click=lambda e, ff=f: ver_produtos(ff)),
+                        ft.IconButton(ft.Icons.RECEIPT_LONG, icon_color=ft.Colors.INDIGO_400,
+                                      tooltip="Histórico de compras",
+                                      on_click=lambda e, ff=f: ver_compras(ff)),
                         ft.IconButton(ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
                                       on_click=lambda e, ff=f: form_fornecedor(ff)),
                         acao,
@@ -3838,11 +3940,31 @@ def main(page: ft.Page):
                     sucesso("Fornecedor desativado.")
                 else:
                     falha("Não foi possível desativar. Verifique a conexão com o banco.")
+
+            # Antes o fornecedor sumia da lista em silêncio e os produtos continuavam
+            # apontando pra ele — na hora de repor o estoque, ninguém lembrava disso.
+            ativos, total = mod_forn.contar_produtos_vinculados(idf)
+            conteudo = [ft.Text("Tem certeza? O fornecedor fica inativo, mas o histórico "
+                                "é preservado.")]
+            if total:
+                plural = "produto continua vinculado" if total == 1 else "produtos continuam vinculados"
+                detalhe = f"{total} {plural} a ele"
+                if ativos and ativos != total:
+                    detalhe += f" ({ativos} ainda ativo{'s' if ativos > 1 else ''})"
+                conteudo.append(ft.Container(
+                    padding=10, border_radius=8, bgcolor=ft.Colors.AMBER_50,
+                    content=ft.Row(spacing=8, controls=[
+                        ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.AMBER_800, size=18),
+                        ft.Text(f"{detalhe}. Eles seguem no estoque, mas você não vai "
+                                "encontrá-lo na lista para repor.",
+                                size=12, color=ft.Colors.AMBER_900, expand=True),
+                    ])))
+
             abrir_dialog(ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Desativar fornecedor"),
-                content=ft.Text("Tem certeza? O fornecedor fica inativo, mas o histórico "
-                                "é preservado."),
+                content=ft.Container(width=430, content=ft.Column(
+                    tight=True, spacing=12, controls=conteudo)),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Desativar", on_click=sim,
@@ -3862,18 +3984,67 @@ def main(page: ft.Page):
                                   hint_text="ex.: 30 dias, à vista...")
             erro_form = ft.Text("", color=ft.Colors.RED_400, size=12)
 
+            # ----- Máscaras e validação (mesmo padrão da tela de Clientes) -----
+            # ⚠️ Flet 0.85: o aviso de erro do campo é `error=` e recebe um CONTROL,
+            # não `error_text="..."` (API antiga, ignorada em silêncio).
+            def marcar_erro(campo, texto):
+                campo.error = ft.Text(texto, size=11) if texto else None
+
+            def mascarar(campo, funcao):
+                def _on_change(e):
+                    campo.value = funcao(campo.value)
+                    marcar_erro(campo, None)     # limpa o erro assim que ele corrige
+                    page.update()
+                return _on_change
+
+            f_cnpj.on_change = mascarar(f_cnpj, val.mascara_cpf_cnpj)
+            f_tel.on_change = mascarar(f_tel, val.mascara_telefone)
+
             def salvar(e):
-                if not (f_nome.value or "").strip():
-                    erro_form.value = "A razão social / nome é obrigatória."
+                for campo in (f_cnpj, f_tel, f_email):
+                    marcar_erro(campo, None)
+                problemas = []
+
+                nome_novo = " ".join((f_nome.value or "").split())
+                if not nome_novo:
+                    problemas.append("A razão social / nome é obrigatória.")
+                # Campo vazio é aceito pelos validadores (tudo aqui é opcional);
+                # o que eles pegam é o preenchido errado.
+                if not val.validar_cpf_cnpj(f_cnpj.value):
+                    marcar_erro(f_cnpj, "CNPJ/CPF inválido")
+                    problemas.append("Confira o CNPJ.")
+                if not val.validar_telefone(f_tel.value):
+                    marcar_erro(f_tel, "Telefone incompleto (com DDD)")
+                    problemas.append("Confira o telefone.")
+                if not val.validar_email(f_email.value):
+                    marcar_erro(f_email, "E-mail inválido")
+                    problemas.append("Confira o e-mail.")
+                if problemas:
+                    erro_form.value = " ".join(problemas)
                     page.update(); return
+
+                # fornecedor.cnpj é UNIQUE: sem esta checagem o INSERT estourava no
+                # banco e a tela só dizia "não foi possível salvar", sem apontar quem
+                # já usa o documento. Na edição, ignora o próprio fornecedor.
+                cnpj_txt = (f_cnpj.value or "").strip() or None
+                if cnpj_txt:
+                    existente = mod_forn.buscar_fornecedor_por_cnpj(cnpj_txt)
+                    if existente and not (editando and existente[0] == forn[0]):
+                        situacao = "" if existente[3] else " (INATIVO — marque \"Incluir inativos\")"
+                        marcar_erro(f_cnpj, "CNPJ já cadastrado")
+                        erro_form.value = (f"O CNPJ {existente[2]} já é do fornecedor "
+                                           f"\"{existente[1]}\" (#{existente[0]}){situacao}.")
+                        page.update(); return
+
                 vals = dict(
-                    nome_razao_social=f_nome.value.strip(),
-                    cnpj=(f_cnpj.value or "").strip() or None,
+                    nome_razao_social=nome_novo,
+                    cnpj=cnpj_txt,
                     telefone=(f_tel.value or "").strip() or None,
                     email=(f_email.value or "").strip() or None,
                     condicoes_pagamento=(f_cond.value or "").strip() or None,
                 )
                 if editando:
+                    # Campo limpo agora APAGA de verdade (sentinela MANTER no backend).
                     ok = mod_forn.editar_fornecedor(forn[0], **vals)
                 else:
                     ok = mod_forn.inserir_fornecedor(**vals) is not None
@@ -3882,7 +4053,8 @@ def main(page: ft.Page):
                     atualizar()
                     sucesso("Fornecedor atualizado." if editando else "Fornecedor cadastrado.")
                 else:
-                    aviso("Erro", "Não foi possível salvar o fornecedor.")
+                    aviso("Erro", "Não foi possível salvar o fornecedor. "
+                                  "Confira os dados e a conexão com o banco.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
@@ -3922,6 +4094,63 @@ def main(page: ft.Page):
                 title=cabecalho_dialog(f"Produtos — {forn[1]}", ft.Icons.INVENTORY_2),
                 content=ft.Container(width=520, content=ft.Column(
                     tight=True, scroll=ft.ScrollMode.AUTO, controls=[corpo])),
+                actions=[ft.TextButton("Fechar", on_click=lambda e: fechar_dialog())],
+            ))
+
+        def ver_compras(forn):
+            """Histórico de compras do fornecedor — vem das despesas lançadas com ele."""
+            dados = mod_forn.compras_do_fornecedor(forn[0])
+            r = dados['resumo']
+
+            def mini_card(titulo, valor, icone, cor):
+                return ft.Container(
+                    width=150, padding=12, bgcolor=ft.Colors.GREY_50, border_radius=10,
+                    content=ft.Column(spacing=2, controls=[
+                        ft.Row(spacing=6, controls=[
+                            ft.Icon(icone, size=16, color=cor),
+                            ft.Text(titulo, size=11, color=ft.Colors.GREY_700)]),
+                        ft.Text(str(valor), size=17, weight=ft.FontWeight.BOLD, color=cor),
+                    ]),
+                )
+
+            em_aberto = float(r['total_aberto'] or 0)
+            cartoes = ft.Row(wrap=True, spacing=10, run_spacing=10, controls=[
+                mini_card("Compras", r['qtd'], ft.Icons.SHOPPING_CART, COR_PRIMARIA),
+                mini_card("Total", brl(r['total']), ft.Icons.PAYMENTS, ft.Colors.BLUE_700),
+                mini_card("Pago", brl(r['total_pago']), ft.Icons.CHECK_CIRCLE, ft.Colors.GREEN_600),
+                mini_card("Em aberto", brl(r['total_aberto']), ft.Icons.PENDING_ACTIONS,
+                          ft.Colors.RED_600 if em_aberto else ft.Colors.GREY_600),
+                mini_card("Última compra", val.data_br(r['ultima']) if r['ultima'] else "—",
+                          ft.Icons.EVENT, ft.Colors.INDIGO_600),
+            ])
+            if dados['despesas']:
+                linhas = []
+                for (_idd, desc, cat, valor, venc, pag) in dados['despesas']:
+                    linhas.append(ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(desc or "")),
+                        ft.DataCell(ft.Text(cat or "—")),
+                        ft.DataCell(ft.Text(brl(valor))),
+                        ft.DataCell(ft.Text(val.data_br(venc) if venc else "—")),
+                        ft.DataCell(ft.Text(val.data_br(pag) if pag else "Em aberto",
+                                            color=None if pag else ft.Colors.RED_600)),
+                    ]))
+                corpo = ft.DataTable(
+                    heading_row_color=ft.Colors.GREY_50,
+                    columns=[ft.DataColumn(ft.Text("Descrição")), ft.DataColumn(ft.Text("Categoria")),
+                             ft.DataColumn(ft.Text("Valor")), ft.DataColumn(ft.Text("Vencimento")),
+                             ft.DataColumn(ft.Text("Pagamento"))],
+                    rows=linhas)
+            else:
+                corpo = ft.Text("Nenhuma compra lançada para este fornecedor. "
+                                "As compras aparecem aqui quando a despesa é cadastrada "
+                                "com ele na tela de Despesas.",
+                                color=ft.Colors.GREY_500, italic=True)
+            abrir_dialog(ft.AlertDialog(
+                modal=True, title_padding=0,
+                title=cabecalho_dialog(f"Compras — {forn[1]}", ft.Icons.RECEIPT_LONG),
+                content=ft.Container(width=680, content=ft.Column(
+                    tight=True, spacing=16, scroll=ft.ScrollMode.AUTO,
+                    controls=[cartoes, corpo])),
                 actions=[ft.TextButton("Fechar", on_click=lambda e: fechar_dialog())],
             ))
 
