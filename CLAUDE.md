@@ -477,6 +477,30 @@ problema era **conceitual**, do tipo que só aparece no balcão.
    no caixa de hoje** (o caixa é diário) — a tela avisa. Sem caixa aberto, avisa para
    abrir e marcar de novo.
 
+✅ **Conferido na tela em 2026-07-22** pelo Lucas: abrir e fechar caixa funcionando, e a
+saída da despesa caindo no caixa como esperado.
+
+**🔜 PRÓXIMO (combinado em 22/07, para começar em 23/07) — "Onde está o dinheiro" (etapa 1).**
+Pergunta do Lucas depois de conferir a tela: *"o cliente não vai saber o valor que tem no
+banco"*. Verdade — o dinheiro de pix/cartão some da tela depois do fechamento. **Mas um
+campo "saldo em banco" recriaria o bug que acabamos de matar**: o crédito não cai na hora
+nem inteiro (R$ 100 hoje ≈ R$ 96,50 em 30 dias, taxa ~3,5%; débito ~2% em D+1), e a conta
+real ainda tem taxa bancária, retirada do dono e imposto, que o sistema nunca vê — em uma
+semana o número diverge do extrato e o dono para de olhar.
+**Decisão: não espelhar o banco.** O saldo do banco quem sabe é o banco; o que o sistema
+sabe e o banco não é **de quais vendas** veio o dinheiro, **quanto ainda vai cair** e
+**quanto se perdeu de taxa**. Então a etapa 1 é um quadro só-leitura, 100% verdadeiro,
+montado do `caixa_movimento` que já existe — **sem tabela nova**:
+```
+DINHEIRO (gaveta) ... conferido no fechamento
+PIX (já caiu) ....... valor cheio
+CARTÃO A RECEBER .... bruto + líquido, quebrado por débito (D+1) e crédito (D+30)
+```
+Precisa de um cadastro simples de **taxa % e prazo em dias por forma de pagamento**
+(~5 linhas de configuração). **Etapa 2, só se o Lucas quiser depois:** `conta_bancaria`
+com o mesmo padrão do caixa — o dono **informa** o saldo real (como conta a gaveta), o
+sistema mostra o esperado e a diferença vira conciliação.
+
 **Achado e ainda não feito** (por ordem de retorno): **3.** aviso de caixa esquecido
 aberto de dias anteriores (hoje as vendas caem no caixa de anteontem em silêncio e o
 faturamento dos dois dias se mistura); **4.** estorno de movimento errado (digitou 500 em
