@@ -2249,7 +2249,10 @@ def main(page: ft.Page):
                             elif mod_caixa.registrar_entrada(
                                     delta,
                                     f"Comanda #{id_ordem} — {cli_nome} ({placa})",
-                                    id_ordem=id_ordem):
+                                    id_ordem=id_ordem,
+                                    # A forma vai junto para o fechamento saber o que
+                                    # está na gaveta e o que caiu no banco (pix/cartão).
+                                    forma_pagamento=dd_key(dd_forma) or None):
                                 msg_caixa = ("Pagamento salvo",
                                              f"Entrada de {brl(delta)} lançada no caixa.")
                             else:
@@ -4598,7 +4601,7 @@ def main(page: ft.Page):
                 if not paga:
                     botoes.append(ft.IconButton(
                         ft.Icons.PAID, icon_color=ft.Colors.GREEN_600, tooltip="Marcar como paga",
-                        on_click=lambda e, i=idd: form_pagar(i)))
+                        on_click=lambda e, i=idd, ds=desc, v=valor: form_pagar(i, ds, v)))
                 botoes.append(ft.IconButton(
                     ft.Icons.EDIT, icon_color=COR_PRIMARIA, tooltip="Editar",
                     on_click=lambda e, dd=d: form_despesa(dd)))
@@ -4661,11 +4664,11 @@ def main(page: ft.Page):
                 ],
             ))
 
-        def form_pagar(idd):
+        def form_pagar(idd, descricao="", valor=0):
             hoje = datetime.now().strftime("%Y-%m-%d")
             f_data = ft.TextField(label="Data do pagamento", value=hoje, width=200)
             dd_forma = ft.Dropdown(
-                label="Forma de pagamento", width=240,
+                label="Forma de pagamento", width=240, value="dinheiro",
                 options=[ft.dropdown.Option(key=k, text=t) for k, t in FORMAS_PAGAMENTO])
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
@@ -4676,20 +4679,65 @@ def main(page: ft.Page):
                         datetime.strptime(dtxt, "%Y-%m-%d")
                     except ValueError:
                         erro.value = "Data inválida (AAAA-MM-DD)."; page.update(); return
+                forma = dd_key(dd_forma) or None
                 ok = mod_desp.marcar_como_paga(idd, data_pagamento=dtxt or None,
-                                               forma_pagamento=dd_key(dd_forma) or None)
+                                               forma_pagamento=forma)
                 fechar_dialog()
                 atualizar()
-                if ok:
-                    sucesso("Despesa marcada como paga.")
-                else:
+                if not ok:
                     falha("Não foi possível marcar como paga. Verifique a conexão.")
+                    return
+
+                # ----- Integração com o Caixa (espelho da ponte Comanda→Caixa) -----
+                # Lança a saída no caixa aberto, mas só a DIFERENÇA para o que esta
+                # despesa já tirou do caixa (soma por id_despesa): marcar como paga de
+                # novo, ou corrigir o pagamento, não duplica a saída.
+                # A forma vai junto: uma conta paga por transferência entra no giro do
+                # dia sem mexer no dinheiro que o operador vai contar na gaveta.
+                valor_f = float(valor or 0)
+                if dtxt and dtxt != hoje:
+                    # O caixa é diário: pagamento de outra data não pertence ao de hoje.
+                    sucesso("Despesa marcada como paga. Pagamento de outra data — "
+                            "não lançado no caixa de hoje.")
+                    return
+                if valor_f <= 0:
+                    sucesso("Despesa marcada como paga.")
+                    return
+
+                ja_lancado = mod_caixa.total_saidas_da_despesa(idd)
+                if ja_lancado is None:
+                    aviso("Atenção",
+                          "Despesa marcada como paga, mas não deu para consultar o "
+                          "caixa. Confira a tela Caixa e lance a saída manualmente "
+                          "se for preciso.")
+                    return
+
+                delta = round(valor_f - float(ja_lancado), 2)
+                if delta <= 0:
+                    sucesso("Despesa marcada como paga. A saída já estava lançada "
+                            "no caixa.")
+                elif not mod_caixa.caixa_aberto():
+                    aviso("Caixa fechado",
+                          f"Despesa marcada como paga, mas {brl(delta)} NÃO saiu do "
+                          "caixa: não há caixa aberto. Abra o caixa e marque como "
+                          "paga de novo para lançar a saída.")
+                elif mod_caixa.registrar_saida(delta, f"Despesa #{idd} — {descricao}",
+                                               id_despesa=idd, forma_pagamento=forma):
+                    sucesso(f"Despesa paga. Saída de {brl(delta)} lançada no caixa.")
+                else:
+                    aviso("Atenção",
+                          "Despesa marcada como paga, mas a saída não foi lançada no "
+                          "caixa. Lance manualmente na tela Caixa.")
 
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
                 title=cabecalho_dialog("Marcar como paga", ft.Icons.PAID),
-                content=ft.Container(width=320, content=ft.Column(tight=True, spacing=12, controls=[
-                    f_data, dd_forma, erro])),
+                content=ft.Container(width=340, content=ft.Column(tight=True, spacing=12, controls=[
+                    ft.Text(f"{descricao} — {brl(valor)}", weight=ft.FontWeight.W_600),
+                    f_data, dd_forma,
+                    ft.Text("A saída é lançada no caixa aberto automaticamente.",
+                            size=11, color=ft.Colors.GREY_600),
+                    erro])),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Confirmar", on_click=salvar,
@@ -4837,6 +4885,11 @@ def main(page: ft.Page):
             entrada = tipo == "entrada"
             f_valor = ft.TextField(label="Valor *", width=200, prefix=ft.Text("R$ "))
             f_desc = ft.TextField(label="Descrição", width=420)
+            # Padrão 'dinheiro': o movimento avulso é o do balcão, na gaveta. Só o que
+            # for marcado como espécie entra na conferência física do fechamento.
+            dd_forma = ft.Dropdown(
+                label="Forma", width=220, value="dinheiro",
+                options=[ft.dropdown.Option(key=k, text=t) for k, t in FORMAS_PAGAMENTO])
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
             def salvar(e):
@@ -4848,8 +4901,10 @@ def main(page: ft.Page):
                 if valor <= 0:
                     erro.value = "Valor deve ser maior que zero."; page.update(); return
                 desc = (f_desc.value or "").strip() or None
-                res = (mod_caixa.registrar_entrada(valor, desc) if entrada
-                       else mod_caixa.registrar_saida(valor, desc))
+                forma = dd_key(dd_forma) or None
+                res = (mod_caixa.registrar_entrada(valor, desc, forma_pagamento=forma)
+                       if entrada
+                       else mod_caixa.registrar_saida(valor, desc, forma_pagamento=forma))
                 fechar_dialog()
                 if res:
                     render()
@@ -4862,8 +4917,10 @@ def main(page: ft.Page):
                 modal=True, title_padding=0,
                 title=cabecalho_dialog("Registrar entrada" if entrada else "Registrar saída",
                                        ft.Icons.ADD if entrada else ft.Icons.REMOVE),
-                content=ft.Container(width=460, content=ft.Column(tight=True, spacing=12,
-                                                                 controls=[f_valor, f_desc, erro])),
+                content=ft.Container(width=460, content=ft.Column(
+                    tight=True, spacing=12,
+                    controls=[ft.Row(spacing=12, controls=[f_valor, dd_forma]),
+                              f_desc, erro])),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Registrar", on_click=salvar,
@@ -4871,8 +4928,14 @@ def main(page: ft.Page):
                 ]))
 
         def form_fechar(id_caixa):
-            esperado = mod_caixa.saldo_esperado(id_caixa)
-            f_real = ft.TextField(label="Saldo real contado *", width=220, prefix=ft.Text("R$ "))
+            # A conferência é contra o DINHEIRO DA GAVETA, não contra o giro do dia:
+            # pix e cartão entraram no caixa mas foram para o banco. Cobrá-los da
+            # gaveta faria o fechamento acusar falta todo dia com pagamento no cartão.
+            resumo = mod_caixa.resumo_por_forma(id_caixa)
+            esperado = resumo['esperado_dinheiro'] if resumo else None
+            nao_especie = resumo['outras_formas'] if resumo else []
+            f_real = ft.TextField(label="Dinheiro contado na gaveta *", width=260,
+                                  prefix=ft.Text("R$ "))
             f_obs = ft.TextField(label="Observações", width=420, multiline=True,
                                  min_lines=2, max_lines=3)
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
@@ -4888,8 +4951,8 @@ def main(page: ft.Page):
                                              observacoes=(f_obs.value or "").strip() or None)
                 fechar_dialog()
                 if res:
-                    # diferenca = saldo real contado - saldo esperado pelo sistema.
-                    # >0 sobra, <0 falta, ~0 bateu (tolerância p/ arredondamento).
+                    # diferenca = dinheiro contado - esperado EM ESPÉCIE (não o giro
+                    # total). >0 sobra, <0 falta, ~0 bateu (tolerância p/ arredondamento).
                     dif = res["diferenca"]
                     if dif is None:
                         msg = "Caixa fechado."
@@ -4899,24 +4962,52 @@ def main(page: ft.Page):
                         msg = f"Caixa fechado. Sobra de {brl(dif)} (mais que o esperado)."
                     else:
                         msg = f"Caixa fechado. Falta de {brl(abs(float(dif)))} (menos que o esperado)."
-                    aviso("Caixa fechado",
-                          f"Esperado: {brl(res['esperado'])}\nReal: {brl(res['real'])}\n\n{msg}")
+                    detalhe = (f"Dinheiro esperado na gaveta: {brl(res['esperado'])}\n"
+                               f"Dinheiro contado: {brl(res['real'])}\n"
+                               f"Giro do dia (com pix/cartão): {brl(res['esperado_total'])}"
+                               f"\n\n{msg}")
+                    aviso("Caixa fechado", detalhe)
                     render()
                 else:
                     aviso("Erro", "Não foi possível fechar o caixa.")
 
+            corpo_fechar = [
+                ft.Container(
+                    bgcolor=ft.Colors.BLUE_50, border_radius=8, padding=12,
+                    content=ft.Column(spacing=2, controls=[
+                        ft.Text("Dinheiro esperado na gaveta", size=12,
+                                color=ft.Colors.GREY_700),
+                        ft.Text(brl(esperado), size=24, weight=ft.FontWeight.BOLD,
+                                color=COR_PRIMARIA)])),
+            ]
+            # Só aparece quando houve pix/cartão: é o aviso que evita o operador
+            # procurar na gaveta um dinheiro que já foi para o banco.
+            if nao_especie:
+                itens = [f"{dict(FORMAS_PAGAMENTO).get(f, f)}: {brl(ent - sai)}"
+                         for (f, ent, sai) in nao_especie]
+                corpo_fechar.append(ft.Container(
+                    bgcolor=ft.Colors.AMBER_50, border_radius=8, padding=12,
+                    content=ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.START,
+                                   controls=[
+                        ft.Icon(ft.Icons.ACCOUNT_BALANCE, size=18,
+                                color=ft.Colors.AMBER_800),
+                        ft.Column(spacing=2, expand=True, controls=[
+                            ft.Text("Não conte estes — foram para o banco:", size=12,
+                                    weight=ft.FontWeight.W_600, color=ft.Colors.AMBER_900),
+                            ft.Text(" · ".join(itens), size=12,
+                                    color=ft.Colors.AMBER_900)])])))
+            corpo_fechar += [
+                ft.Text("Conte só as cédulas e moedas da gaveta e informe o valor:",
+                        size=12, color=ft.Colors.GREY_600),
+                f_real, f_obs, erro,
+            ]
+
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
                 title=cabecalho_dialog("Fechar caixa", ft.Icons.LOCK),
-                content=ft.Container(width=460, content=ft.Column(tight=True, spacing=12, controls=[
-                    ft.Container(
-                        bgcolor=ft.Colors.BLUE_50, border_radius=8, padding=12,
-                        content=ft.Text(f"Saldo esperado (sistema): {brl(esperado)}",
-                                        weight=ft.FontWeight.BOLD, color=COR_PRIMARIA)),
-                    ft.Text("Conte o dinheiro na gaveta e informe o valor real:",
-                            size=12, color=ft.Colors.GREY_600),
-                    f_real, f_obs, erro,
-                ])),
+                content=ft.Container(width=460, content=ft.Column(
+                    tight=True, spacing=12, scroll=ft.ScrollMode.AUTO,
+                    controls=corpo_fechar)),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Fechar caixa", on_click=salvar,
@@ -4931,11 +5022,51 @@ def main(page: ft.Page):
                         weight=ft.FontWeight.BOLD, color=cor),
             ])
 
+        def linha_formas(resumo):
+            # Quebra por forma de pagamento: de onde veio (e por onde saiu) o dinheiro.
+            # Verde = espécie, está na gaveta e será contado no fechamento; cinza com
+            # ícone de banco = pix/cartão, o dinheiro não está aqui.
+            linhas = resumo['linhas'] if resumo else []
+            if not linhas:
+                return ft.Container()      # caixa ainda sem movimento: nada a quebrar
+            no_banco = {f for (f, _e, _s) in resumo['outras_formas']}
+            chips = []
+            for (forma, ent, sai) in linhas:
+                banco = forma in no_banco
+                valores = []
+                if ent:
+                    valores.append(ft.Text(f"+{brl(ent)}", size=12,
+                                           weight=ft.FontWeight.W_600,
+                                           color=ft.Colors.GREEN_700))
+                if sai:
+                    valores.append(ft.Text(f"−{brl(sai)}", size=12,
+                                           weight=ft.FontWeight.W_600,
+                                           color=ft.Colors.RED_600))
+                chips.append(ft.Container(
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+                    border_radius=10,
+                    bgcolor=ft.Colors.GREY_100 if banco else ft.Colors.GREEN_50,
+                    content=ft.Column(spacing=2, tight=True, controls=[
+                        ft.Row(spacing=4, tight=True, controls=[
+                            ft.Icon(ft.Icons.ACCOUNT_BALANCE if banco else ft.Icons.PAYMENTS,
+                                    size=13,
+                                    color=ft.Colors.GREY_600 if banco else ft.Colors.GREEN_700),
+                            ft.Text(dict(FORMAS_PAGAMENTO).get(forma, forma), size=11,
+                                    color=ft.Colors.GREY_700)]),
+                        ft.Row(spacing=8, tight=True, controls=valores or [
+                            ft.Text("—", size=12, color=ft.Colors.GREY_500)]),
+                    ])))
+            return ft.Row(spacing=10, wrap=True, controls=chips)
+
         def painel_aberto(aberto):
             # 'aberto' = tupla de caixa.caixa_aberto(): (id, abertura, fundo, id_func).
             id_caixa, data_ab, valor_ini, id_func = aberto
-            # Saldo esperado = fundo inicial + entradas - saídas (calculado no backend).
-            esperado = mod_caixa.saldo_esperado(id_caixa)
+            # Dois números diferentes, de propósito: o da GAVETA (só espécie, é o que se
+            # confere no fechamento) e o GIRO do dia (inclui pix/cartão, que foram para
+            # o banco). Uma consulta só traz os dois + a quebra por forma.
+            resumo = mod_caixa.resumo_por_forma(id_caixa)
+            esperado = resumo['esperado_dinheiro'] if resumo else None
+            giro = resumo['esperado_total'] if resumo else None
             func = mod_func.buscar_funcionario_por_id(id_func) if id_func else None
             resp = func[1] if func else "—"
             movs = mod_caixa.movimentos_do_caixa(id_caixa)
@@ -4958,8 +5089,11 @@ def main(page: ft.Page):
                         info("Aberto em", fmt_dt(data_ab)),
                         info("Fundo inicial", brl(valor_ini)),
                         info("Responsável", resp),
-                        info("Saldo esperado", brl(esperado), cor=COR_PRIMARIA, grande=True),
+                        info("Na gaveta (dinheiro)", brl(esperado), cor=COR_PRIMARIA,
+                             grande=True),
+                        info("Giro do dia (tudo)", brl(giro), cor=ft.Colors.GREY_700),
                     ]),
+                    linha_formas(resumo),
                     ft.Row(spacing=10, controls=[
                         ft.FilledButton("Entrada", icon=ft.Icons.ADD,
                                         on_click=lambda e: form_movimento("entrada"),
@@ -4977,8 +5111,11 @@ def main(page: ft.Page):
                 linhas = []
                 # Cada movimento pode referenciar uma comanda (id_ordem) OU uma despesa
                 # (id_desp) OU nenhum (entrada/saída avulsa). Só um deles vem preenchido.
-                for (_idm, tipo, valor, desc, id_ordem, id_desp, data) in movs:
+                for (_idm, tipo, valor, desc, id_ordem, id_desp, data, forma) in movs:
                     entrada = tipo == "entrada"
+                    # Movimento antigo (sem forma) conta como dinheiro — mesma regra do
+                    # backend (FORMAS_EM_ESPECIE), por isso o rótulo já mostra Dinheiro.
+                    forma = forma or "dinheiro"
                     linhas.append(ft.DataRow(cells=[
                         ft.DataCell(ft.Row(spacing=4, controls=[
                             ft.Icon(ft.Icons.ARROW_DOWNWARD if entrada else ft.Icons.ARROW_UPWARD,
@@ -4987,6 +5124,7 @@ def main(page: ft.Page):
                             ft.Text("Entrada" if entrada else "Saída", size=12)])),
                         ft.DataCell(ft.Text(brl(valor),
                                             color=ft.Colors.GREEN_700 if entrada else ft.Colors.RED_600)),
+                        ft.DataCell(ft.Text(dict(FORMAS_PAGAMENTO).get(forma, forma), size=12)),
                         ft.DataCell(ft.Text(desc or "—")),
                         ft.DataCell(ft.Text(f"#{id_ordem}" if id_ordem else
                                             (f"desp #{id_desp}" if id_desp else "—"))),
@@ -4995,6 +5133,7 @@ def main(page: ft.Page):
                 tabela_movs = ft.DataTable(
                     expand=True, heading_row_color=ft.Colors.GREY_50,
                     columns=[ft.DataColumn(ft.Text("Tipo")), ft.DataColumn(ft.Text("Valor")),
+                             ft.DataColumn(ft.Text("Forma")),
                              ft.DataColumn(ft.Text("Descrição")), ft.DataColumn(ft.Text("Ref.")),
                              ft.DataColumn(ft.Text("Data"))],
                     rows=linhas)

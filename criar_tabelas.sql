@@ -336,7 +336,16 @@ CREATE TABLE IF NOT EXISTS caixa_movimento (
     data_mov      TIMESTAMP DEFAULT NOW()
 );
 
+-- Como o dinheiro entrou/saiu (dinheiro, pix, cartao_credito...). Copiada da comanda
+-- ou da despesa que originou o movimento. Serve para separar, no fechamento, o que
+-- está DE FATO na gaveta do que caiu no banco (pix/cartão) — sem ela o caixa acusa
+-- falta todo dia em que alguém pagou no cartão. NULL = dinheiro (movimento antigo,
+-- lançado antes desta coluna existir).
+ALTER TABLE caixa_movimento ADD COLUMN IF NOT EXISTS forma_pagamento VARCHAR(20);
+
 CREATE INDEX IF NOT EXISTS idx_caixa_movimento_caixa ON caixa_movimento(id_caixa);
+-- A ponte Despesa→Caixa consulta por id_despesa para não lançar a saída duas vezes.
+CREATE INDEX IF NOT EXISTS idx_caixa_movimento_despesa ON caixa_movimento(id_despesa);
 
 
 -- ================================================================

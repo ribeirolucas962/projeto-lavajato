@@ -81,7 +81,7 @@ ao `DB_config` em `conexao.py`.
 | 7 | Estoque | `produto`, `movimentacao_estoque` | `estoque.py` | ✅ CRUD + revisão 21/07 |
 | 8 | Fornecedores | `fornecedor` | `fornecedores.py` | ✅ CRUD + revisão 21/07 |
 | 9 | Despesa | `despesa` | `despesa.py` | ✅ CRUD feito |
-| 10 | Caixa | `caixa`, `caixa_movimento` | `caixa.py` | ✅ CRUD feito |
+| 10 | Caixa | `caixa`, `caixa_movimento` | `caixa.py` | ✅ CRUD + revisão 22/07 |
 | 11 | Dashboard | *(sem tabela — só consultas)* | `dashboard.py` | ✅ consultas feitas |
 | 12 | Fidelidade | `fidelidade_saldo`, `fidelidade_movimento` | `fidelidade.py` | ✅ CRUD feito |
 | 13 | Planos e Assinaturas | `plano`, `plano_servico`, `assinatura`, `assinatura_uso` | `planos_assinaturas.py` | ✅ CRUD feito |
@@ -186,6 +186,7 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   é salvo mesmo assim e um aviso manda abrir o caixa e salvar de novo (aí o delta entra).
   Valor pago menor que o já lançado: aviso sugere registrar saída manual na tela Caixa.
   O movimento fica rastreável (grava `id_ordem` + descrição "Comanda #N — cliente (placa)").
+  Desde 22/07 a entrada leva junto a **forma de pagamento** — ver [Módulo 10 (Caixa)].
 - **Reabrir comanda para correção (2026-07-16):** comanda entregue/cancelada fica
   travada na tela (edição desabilitada); o botão **"Reabrir p/ correção"** (só aparece
   nesses status, com diálogo de confirmação) destrava: entregue volta a `finalizado`
@@ -441,6 +442,64 @@ foram vistas rodando** — a tentativa de 21/07 foi abortada depois do acidente 
   → o CNPJ deve se formatar ao digitar; e-mail `xyz` → erro embaixo do campo; ícone de recibo
   na Distribuidora AutoLimp → histórico de compras com os 5 mini-cards.
 - **Serviços:** a coluna Preços deve mostrar a **faixa** ("3 porte(s) · R$ 20,00 a R$ 55,50").
+
+### Módulo 10 (Caixa) — forma de pagamento e ponte Despesa→Caixa (2026-07-22)
+Revisão do caixa achou 7 problemas; os **2 primeiros foram feitos** (31 checks contra o
+banco, dados de teste apagados no fim). A matemática do saldo já estava certa — o
+problema era **conceitual**, do tipo que só aparece no balcão.
+
+1. ✅ **O fechamento nunca ia bater.** O saldo esperado era `fundo + TODAS as entradas −
+   saídas`, mas a tela pede *"conte o dinheiro na gaveta"*. Pix e cartão entram no caixa
+   e vão para o **banco** — cobrá-los da gaveta fazia o app acusar **falta todo dia** em
+   que alguém pagasse no cartão, e o pessoal aprenderia a ignorar justamente o aviso que
+   existe para detectar dinheiro sumindo. Correções:
+   - `caixa_movimento.forma_pagamento` (VARCHAR 20, via `ALTER TABLE ... IF NOT EXISTS`),
+     copiada da comanda/despesa que originou o movimento. **NULL = dinheiro** (regra em
+     `FORMAS_EM_ESPECIE` + `_em_especie()`), então os 6 movimentos antigos seguem valendo.
+   - `resumo_por_forma(id_caixa)` — numa consulta só devolve a quebra por forma
+     (`GROUP BY`, com `COALESCE(NULLIF(BTRIM(...),''),'dinheiro')` normalizando no banco)
+     + `esperado_dinheiro` (**o que está na gaveta**, único número comparável com a
+     contagem física) e `esperado_total` (o giro do dia, com pix/cartão).
+   - `fechar_caixa()` agora confere contra o **esperado em espécie**; devolve
+     `esperado` (=espécie), `esperado_total` e `resumo`. `saldo_esperado()` ficou como
+     está (giro total) e não é mais usada pela tela.
+   - Tela: painel mostra **"Na gaveta"** (grande) × **"Giro do dia"**, mais chips por
+     forma (verde = espécie, cinza com ícone de banco = pix/cartão); coluna **Forma** nos
+     movimentos; e o diálogo de fechar traz a faixa âmbar *"Não conte estes — foram para
+     o banco"* com os valores de pix/cartão.
+2. ✅ **Despesa paga não saía do caixa.** `caixa_movimento.id_despesa` existia no schema e
+   `registrar_saida()` aceitava o parâmetro, mas **nenhuma linha do projeto passava** —
+   mesma **coluna órfã** do `preco_venda` no Estoque, e a especificação do módulo pedia
+   *"Saídas (despesas pagas no dia)"*. A ponte Comanda→Caixa (16/07) nunca ganhou o par.
+   Agora "Marcar como paga" lança a saída no caixa aberto, com a mesma receita anti-dupla:
+   nova `total_saidas_da_despesa()` (espelho de `total_entradas_da_ordem`) e lançamento
+   só do **delta**. Guarda importante: **pagamento com data diferente de hoje NÃO entra
+   no caixa de hoje** (o caixa é diário) — a tela avisa. Sem caixa aberto, avisa para
+   abrir e marcar de novo.
+
+**Achado e ainda não feito** (por ordem de retorno): **3.** aviso de caixa esquecido
+aberto de dias anteriores (hoje as vendas caem no caixa de anteontem em silêncio e o
+faturamento dos dois dias se mistura); **4.** estorno de movimento errado (digitou 500 em
+vez de 50 → só dá para lançar uma saída falsa que suja o histórico); **5.** conferência no
+histórico (a lista mostra fundo e saldo final, mas não o esperado nem a sobra/falta, e não
+dá para clicar num dia e ver os movimentos — `movimentos_do_caixa()` já está pronta);
+**6.** `caixa.observacoes` é **uma coluna só** para abertura e fechamento, então anotar algo
+no fechamento **apaga** a anotação da abertura; **7.** `valor_inicial` sem CHECK no banco e
+sem validação em `abrir_caixa()` — dá para abrir caixa com fundo negativo (mesma família de
+bug do Estoque); e `abrir_caixa()` tem TOCTOU (checa e insere) — um índice único parcial
+`WHERE status='aberto'` tornaria a invariante real no banco.
+*Ideias de valor:* comprovante de fechamento em PDF (o "Z do dia", já temos reportlab);
+aviso ao fechar de **comandas entregues hoje sem pagamento** (pega carro que saiu sem
+cobrar); sangria/suprimento como tipo próprio; resumo do dia no fechamento.
+
+⚠️ **Pendente de conferência na tela.** Backend testado contra o banco e `app.py` compila,
+mas as telas não foram vistas rodando. Roteiro (operador navegando):
+- **Caixa:** abrir caixa → Entrada de R$ 100 em **Pix** → o painel deve mostrar
+  **"Na gaveta"** sem o pix e **"Giro do dia"** com ele, e um chip cinza "Pix +R$ 100,00".
+- **Fechar caixa:** a faixa âmbar *"Não conte estes"* deve listar o pix, e contar só o
+  dinheiro deve fechar **"bateu certinho"**.
+- **Despesas:** marcar uma despesa como paga (data de hoje) → mensagem *"Saída de R$ X
+  lançada no caixa"*, e o movimento aparece na tela Caixa com Ref. `desp #N`.
 
 ### Dívidas estruturais do projeto (levantadas em 2026-07-21, nada feito)
 Diagnóstico pedido pelo Lucas ("esse sistema foi bem estruturado certo?"). Resumo: **a dívida
