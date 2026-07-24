@@ -45,10 +45,22 @@ DB_config = {
     'user': os.environ.get('DB_USER', 'postgres'),
     'password': os.environ.get('DB_PASSWORD', ''),
     'client_encoding': 'utf8',
-    # Força as mensagens de erro do Postgres em inglês (locale C). No Windows, sem
-    # isso o psycopg2 pode quebrar com UnicodeDecodeError ao ler um erro em português
-    # (Win-1252). '-c lc_messages=C' é passado ao servidor via libpq no connect.
-    'options': '-c lc_messages=C',
+    # Dois ajustes por sessão, passados ao servidor via libpq no connect:
+    #
+    # lc_messages=C  — força as mensagens de erro do Postgres em inglês. No Windows,
+    #   sem isso o psycopg2 pode quebrar com UnicodeDecodeError ao ler um erro em
+    #   português (Win-1252).
+    #
+    # TimeZone=America/Sao_Paulo — o servidor (Postgres em container Docker no TrueNAS)
+    #   roda em Etc/UTC, 3h à frente do relógio da loja, mas as telas usam o
+    #   datetime.now() do Python (local). Sem isto o sistema fica com DOIS RELÓGIOS e,
+    #   das 21h à meia-noite, eles discordam em um DIA inteiro: caixa aberto às 22:57
+    #   gravava "24/07 01:57" (e o caixa é diário), a ponte Despesa→Caixa recusava um
+    #   pagamento legítimo por achar que a data não era hoje, e o corte "hoje" do
+    #   dashboard pegava o dia errado. Ajustar aqui vale para todas as conexões do app,
+    #   fica versionado e sobrevive a recriar o container — ao contrário de editar o
+    #   postgresql.conf de lá, que ainda afetaria os outros bancos do mesmo servidor.
+    'options': '-c lc_messages=C -c TimeZone=America/Sao_Paulo',
 }
 
 

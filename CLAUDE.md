@@ -41,10 +41,29 @@ conectado em `oficina_mecanica` (tabelas no plural `clientes`/`veiculos`, mais
 só mostra o banco digitado; para ver o `lavajato_db` crie uma conexão própria pra ele
 ou marque "Show all databases" na conexão existente.
 
-### Pendência conhecida (não aplicada)
-No Windows, o psycopg2 pode quebrar com `UnicodeDecodeError` ao ler mensagens de erro
-do Postgres em português (Win-1252). Fix sugerido: adicionar `'options': '-c lc_messages=C'`
-ao `DB_config` em `conexao.py`.
+### Ajustes de sessão no `conexao.py` (ambos JÁ aplicados)
+O `DB_config` passa `'options': '-c lc_messages=C -c TimeZone=America/Sao_Paulo'`:
+1. **`lc_messages=C`** — mensagens de erro do Postgres em inglês. Sem isso, no Windows o
+   psycopg2 pode quebrar com `UnicodeDecodeError` ao ler um erro em português (Win-1252).
+2. **`TimeZone=America/Sao_Paulo`** — **corrige os DOIS RELÓGIOS** (achado em 2026-07-23,
+   conferindo o caixa na tela). O Postgres roda em **container Docker** no TrueNAS com
+   `TimeZone = Etc/UTC` fixado no `postgresql.conf` de lá (`/var/lib/postgresql/18/docker/`),
+   então `NOW()`/`CURRENT_DATE` vinham 3h à frente, enquanto as telas usam o
+   `datetime.now()` do Python (local). **Das 21h à meia-noite os dois discordavam em um
+   dia inteiro.** Visto na prática: caixa aberto às 22:57 gravado como "24/07 01:57" e a
+   previsão de crédito saindo 23/08 em vez de 22/08. Mordia em `caixa.data_abertura` (o
+   caixa é diário), na ponte Despesa→Caixa (`app.py` compara o `hoje` do Python com a
+   `data_pagamento` que o banco preenche via `CURRENT_DATE` — recusaria pagamento
+   legítimo), em `ordem_servico.entrada_em` e no corte "hoje" do `dashboard.py`.
+   ⚠️ **Mexer no relógio do TrueNAS por fora NÃO resolve** — o container tem o próprio
+   `postgresql.conf`. Corrigir na conexão vale para todo o app, fica versionado, sobrevive
+   a recriar o container e não afeta os bancos vizinhos do mesmo servidor.
+
+⚠️ **Registros gravados ANTES de 2026-07-23 estão 3h adiantados** (foram escritos em UTC).
+Não foram corrigidos retroativamente de propósito: um UPDATE em massa teria de distinguir
+as colunas preenchidas por `NOW()`/DEFAULT das **digitadas pelo operador** (`agendamento.data_hora`,
+`despesa.data_vencimento`, `ordem_servico.data_pagamento`), que estão certas e virariam lixo.
+Risco alto, ganho baixo — o efeito prático é um horário 3h à frente em registros antigos.
 
 ---
 
