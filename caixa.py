@@ -13,7 +13,8 @@ de fato na gaveta do que caiu no banco (pix/cartão): sem essa separação o cai
 acusaria falta todo dia em que alguém pagasse no cartão.
 """
 
-from decimal import Decimal
+from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
 from conexao import conectar
 
@@ -22,6 +23,11 @@ from conexao import conectar
 # consegue contar no fechamento. Movimento sem forma (NULL) conta como dinheiro:
 # é o caso dos lançamentos anteriores a esta coluna existir e o padrão do balcão.
 FORMAS_EM_ESPECIE = ('dinheiro',)
+
+# Usada quando o caixa tem um movimento com forma que não está em taxa_pagamento
+# (alguém gravou uma string diferente). Sem taxa e sem prazo: o sistema não inventa
+# desconto num pagamento que não sabe explicar.
+TAXA_PADRAO = {'percentual': Decimal('0'), 'prazo_dias': 0}
 
 
 def _em_especie(forma):
@@ -250,12 +256,15 @@ def resumo_por_forma(id_caixa=None):
 
     try:
         cursor = conexao.cursor()
-        cursor.execute("SELECT valor_inicial FROM caixa WHERE id_caixa = %s;", (id_caixa,))
+        cursor.execute(
+            "SELECT valor_inicial, data_abertura FROM caixa WHERE id_caixa = %s;",
+            (id_caixa,)
+        )
         linha = cursor.fetchone()
         if not linha:
             print(f"Caixa {id_caixa} não encontrado.")
             return None
-        valor_inicial = linha[0]
+        valor_inicial, data_abertura = linha
 
         # Movimento sem forma (NULL/'') conta como dinheiro — ver FORMAS_EM_ESPECIE.
         # O agrupamento normaliza aqui, no banco, para não aparecer "—" na tela.
@@ -289,12 +298,207 @@ def resumo_por_forma(id_caixa=None):
 
     return {
         'valor_inicial': valor_inicial,
+        'data_abertura': data_abertura,
         'linhas': linhas,
         'outras_formas': [l for l in linhas if not _em_especie(l[0])],
         'entradas': entradas,
         'saidas': saidas,
         'esperado_total': valor_inicial + entradas - saidas,
         'esperado_dinheiro': valor_inicial + entradas_especie - saidas_especie,
+    }
+
+
+# ================================================================
+# TAXAS E PRAZOS POR FORMA DE PAGAMENTO
+# ================================================================
+def taxas_pagamento():
+    """
+    Lê o cadastro de taxa (%) e prazo (dias) de cada forma de pagamento.
+    Retorna dict {forma: {'rotulo', 'percentual', 'prazo_dias', 'ordem'}} — vazio
+    em caso de erro (quem chama trata a forma desconhecida com TAXA_PADRAO).
+    """
+    conexao = conectar()
+    if not conexao:
+        return {}
+
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT forma, rotulo, percentual, prazo_dias, ordem
+            FROM taxa_pagamento
+            ORDER BY ordem, forma;
+            """
+        )
+        return {
+            forma: {'rotulo': rotulo, 'percentual': pct,
+                    'prazo_dias': prazo, 'ordem': ordem}
+            for (forma, rotulo, pct, prazo, ordem) in cursor.fetchall()
+        }
+
+    except Exception as erro:
+        print(f"Erro ao ler as taxas de pagamento: {erro}")
+        return {}
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def salvar_taxa(forma, percentual, prazo_dias, rotulo=None):
+    """
+    Grava a taxa e o prazo de uma forma de pagamento (cria se ainda não existir).
+    Valida ANTES de abrir conexão — mesma receita do estoque: percentual entre
+    0 e 100, prazo inteiro >= 0. Retorna True/False.
+    """
+    forma = (forma or "").strip()
+    if not forma:
+        print("Forma de pagamento é obrigatória.")
+        return False
+
+    try:
+        percentual = Decimal(str(percentual).replace(",", "."))
+    except Exception:
+        print("Percentual deve ser um número.")
+        return False
+    if percentual < 0 or percentual > 100:
+        print("Percentual deve estar entre 0 e 100.")
+        return False
+
+    try:
+        prazo_dias = int(prazo_dias)
+    except (TypeError, ValueError):
+        print("Prazo deve ser um número inteiro de dias.")
+        return False
+    if prazo_dias < 0:
+        print("Prazo não pode ser negativo.")
+        return False
+
+    conexao = conectar()
+    if not conexao:
+        return False
+
+    try:
+        cursor = conexao.cursor()
+        # UPSERT: a tela edita as formas já cadastradas, mas manter o INSERT permite
+        # cadastrar uma forma nova (outra maquininha) sem mexer no schema.
+        cursor.execute(
+            """
+            INSERT INTO taxa_pagamento (forma, rotulo, percentual, prazo_dias)
+            VALUES (%s, COALESCE(%s, %s), %s, %s)
+            ON CONFLICT (forma) DO UPDATE
+               SET percentual    = EXCLUDED.percentual,
+                   prazo_dias    = EXCLUDED.prazo_dias,
+                   rotulo        = COALESCE(%s, taxa_pagamento.rotulo),
+                   atualizado_em = NOW();
+            """,
+            (forma, rotulo, forma, percentual, prazo_dias, rotulo)
+        )
+        conexao.commit()
+        return True
+
+    except Exception as erro:
+        print(f"Erro ao salvar a taxa de pagamento: {erro}")
+        conexao.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def _centavos(valor):
+    """Arredonda para 2 casas como o banco faz (meio para cima)."""
+    return Decimal(valor).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def onde_esta_o_dinheiro(id_caixa=None):
+    """
+    Responde "o dinheiro deste caixa está ONDE, e quando vira dinheiro de verdade?".
+    Se id_caixa for None, usa o caixa aberto.
+
+    Não espelha o saldo do banco de propósito — o extrato quem tem é o banco, e um
+    campo "saldo em banco" divergiria em uma semana (taxa bancária, retirada do dono,
+    imposto, que o sistema nunca vê). O que o sistema sabe e o banco não é DE QUAIS
+    VENDAS veio o dinheiro, QUANTO ainda vai cair e QUANTO se perdeu de taxa. É só
+    isso que este quadro mostra, tudo derivado de caixa_movimento.
+
+    Retorna dict, ou None em caso de erro:
+      {
+        'gaveta':        Decimal,  dinheiro em espécie (= esperado_dinheiro)
+        'ja_caiu':       [ {forma, rotulo, valor, entradas, saidas}, ... ]
+                                   pix/transferência: prazo 0, já está na conta
+        'a_receber':     [ {forma, rotulo, bruto, liquido, taxa_valor, percentual,
+                            prazo_dias, previsao}, ... ]   cartão: ainda vem
+        'total_ja_caiu', 'total_bruto_a_receber', 'total_liquido_a_receber',
+        'total_taxas':   Decimal
+        'total_geral':   Decimal   gaveta + já caiu + líquido a receber
+        'saidas_no_cartao': [ {forma, rotulo, valor}, ... ]  (nota, ver abaixo)
+      }
+    """
+    resumo = resumo_por_forma(id_caixa)
+    if not resumo:
+        return None
+    taxas = taxas_pagamento()
+
+    # Base da previsão: o dia em que o caixa foi aberto, não "hoje" — o crédito
+    # conta a partir da venda. Conferindo um caixa de ontem, a previsão continua
+    # certa em vez de andar um dia a cada vez que a tela é aberta.
+    abertura = resumo.get('data_abertura')
+    base = abertura.date() if hasattr(abertura, 'date') else (abertura or date.today())
+
+    ja_caiu, a_receber, saidas_no_cartao = [], [], []
+
+    for (forma, entradas, saidas) in resumo['linhas']:
+        if _em_especie(forma):
+            continue                      # é a gaveta, já contabilizada no resumo
+
+        taxa = taxas.get(forma, TAXA_PADRAO)
+        rotulo = taxa.get('rotulo') or forma.replace("_", " ").capitalize()
+        pct = Decimal(taxa['percentual'])
+        prazo = int(taxa['prazo_dias'])
+
+        if prazo <= 0:
+            # Pix/transferência: caiu na hora. A saída ABATE, porque uma despesa
+            # paga por pix tira dinheiro da mesma conta em que a venda entrou.
+            liquido = _centavos(entradas * (Decimal('1') - pct / 100))
+            ja_caiu.append({
+                'forma': forma, 'rotulo': rotulo,
+                'entradas': entradas, 'saidas': saidas,
+                'valor': liquido - saidas,
+            })
+        else:
+            # Cartão: só as ENTRADAS são recebível. Uma despesa paga no cartão da
+            # empresa não abate o repasse da maquininha (vira fatura, outro bolso),
+            # então ela sai daqui e vira só uma nota na tela.
+            bruto = entradas
+            liquido = _centavos(bruto * (Decimal('1') - pct / 100))
+            if bruto:
+                a_receber.append({
+                    'forma': forma, 'rotulo': rotulo,
+                    'bruto': bruto, 'liquido': liquido,
+                    'taxa_valor': bruto - liquido,
+                    'percentual': pct, 'prazo_dias': prazo,
+                    'previsao': base + timedelta(days=prazo),
+                })
+            if saidas:
+                saidas_no_cartao.append({'forma': forma, 'rotulo': rotulo,
+                                         'valor': saidas})
+
+    total_ja_caiu = sum((l['valor'] for l in ja_caiu), Decimal('0'))
+    total_bruto = sum((l['bruto'] for l in a_receber), Decimal('0'))
+    total_liquido = sum((l['liquido'] for l in a_receber), Decimal('0'))
+
+    return {
+        'gaveta': resumo['esperado_dinheiro'],
+        'ja_caiu': ja_caiu,
+        'a_receber': sorted(a_receber, key=lambda l: l['prazo_dias']),
+        'saidas_no_cartao': saidas_no_cartao,
+        'total_ja_caiu': total_ja_caiu,
+        'total_bruto_a_receber': total_bruto,
+        'total_liquido_a_receber': total_liquido,
+        'total_taxas': total_bruto - total_liquido,
+        'total_geral': resumo['esperado_dinheiro'] + total_ja_caiu + total_liquido,
     }
 
 
@@ -502,6 +706,16 @@ if __name__ == "__main__":
             print(f"   {forma:<10} entradas {ent}  saídas {sai}")
         print("  Esperado na GAVETA (100 + 40 - 25 = 115):", r['esperado_dinheiro'])
         print("  Esperado TOTAL    (com o pix)          :", r['esperado_total'])
+
+        print("\nOnde está o dinheiro:")
+        q = onde_esta_o_dinheiro(cid)
+        print(f"   Na gaveta ..... {q['gaveta']}")
+        for l in q['ja_caiu']:
+            print(f"   {l['rotulo']} (já caiu) ..... {l['valor']}")
+        for l in q['a_receber']:
+            print(f"   {l['rotulo']}: {l['bruto']} -> {l['liquido']} "
+                  f"(-{l['percentual']}%) em {l['previsao']}")
+        print(f"   Total do dia, já sem as taxas: {q['total_geral']}")
 
         print("\nFechando com R$115 contados na gaveta (deve bater, apesar do pix)...")
         resultado = fechar_caixa(saldo_real=115)

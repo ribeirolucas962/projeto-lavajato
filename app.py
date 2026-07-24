@@ -5058,6 +5058,176 @@ def main(page: ft.Page):
                     ])))
             return ft.Row(spacing=10, wrap=True, controls=chips)
 
+        def pct_fmt(v):
+            """3.50 -> '3,5%'; 0 -> '0%' (sem zeros à toa)."""
+            try:
+                return f"{float(v):g}".replace(".", ",") + "%"
+            except (TypeError, ValueError):
+                return "—"
+
+        def form_taxas():
+            # Cadastro de taxa e prazo por forma de pagamento. É o que permite ao
+            # quadro dizer "R$ 500 no crédito viram R$ 482,50 em 30 dias" — e a taxa
+            # muda quando o dono renegocia com a adquirente, por isso fica editável
+            # aqui em vez de fixa no código.
+            taxas = mod_caixa.taxas_pagamento()
+            erro = ft.Text("", color=ft.Colors.RED_400, size=12)
+            campos = []          # [(forma, rotulo, TextField %, TextField dias)]
+            linhas_form = []
+            for forma, t in taxas.items():
+                # float antes do :g — em Decimal o 'g' preserva as casas do banco
+                # e o campo abriria com "0,00" em vez de "0".
+                f_pct = ft.TextField(label="Taxa", width=110, suffix=ft.Text("%"),
+                                     value=f"{float(t['percentual']):g}".replace(".", ","))
+                f_dias = ft.TextField(label="Prazo", width=120,
+                                      suffix=ft.Text("dias"),
+                                      value=str(t['prazo_dias']))
+                campos.append((forma, t['rotulo'], f_pct, f_dias))
+                linhas_form.append(ft.Row(spacing=12,
+                                          vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                          controls=[
+                    ft.Container(width=170, content=ft.Text(t['rotulo'], size=14)),
+                    f_pct, f_dias]))
+
+            def salvar(e):
+                # Acumula as falhas e NOMEIA quem não gravou, em vez de dizer
+                # "salvo!" quando o banco recusou (bug já corrigido em Serviços).
+                falhou = []
+                for forma, rotulo, f_pct, f_dias in campos:
+                    pct = (f_pct.value or "0").strip().replace(",", ".")
+                    dias = (f_dias.value or "0").strip()
+                    if not mod_caixa.salvar_taxa(forma, pct, dias):
+                        falhou.append(rotulo)
+                if falhou:
+                    erro.value = ("Não foi possível salvar: " + ", ".join(falhou) +
+                                  ". Taxa de 0 a 100 e prazo em dias inteiros.")
+                    page.update()
+                    return
+                fechar_dialog()
+                render()
+                sucesso("Taxas atualizadas.")
+
+            abrir_dialog(ft.AlertDialog(
+                modal=True, title_padding=0,
+                title=cabecalho_dialog("Taxas das maquininhas", ft.Icons.PERCENT),
+                content=ft.Container(width=520, content=ft.Column(
+                    tight=True, spacing=12, scroll=ft.ScrollMode.AUTO, controls=[
+                        ft.Text("Quanto a maquininha desconta e em quantos dias o "
+                                "dinheiro cai na conta. Dinheiro e Pix normalmente "
+                                "ficam em 0% e 0 dias.",
+                                size=12, color=ft.Colors.GREY_600),
+                        *linhas_form, erro])),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
+                    ft.FilledButton("Salvar", on_click=salvar,
+                                    style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
+                ]))
+
+        def bloco_onde_dinheiro(id_caixa):
+            """
+            "Onde está o dinheiro": separa o que dá para contar na gaveta, o que já
+            caiu na conta (pix) e o que a maquininha ainda vai repassar (cartão),
+            com o líquido depois da taxa e a data prevista.
+
+            NÃO é o saldo do banco, de propósito — o extrato quem tem é o banco, e
+            um "saldo em banco" digitado aqui divergiria em uma semana (taxa
+            bancária, retirada do dono, imposto, que o sistema nunca vê). Isto aqui
+            é 100% derivado dos movimentos do caixa, então é sempre verdade.
+            """
+            q = mod_caixa.onde_esta_o_dinheiro(id_caixa)
+            if not q:
+                return ft.Container()
+
+            def cartao_valor(titulo, valor, legenda, cor_fundo, cor_texto, icone):
+                return ft.Container(
+                    expand=True, padding=14, border_radius=10, bgcolor=cor_fundo,
+                    content=ft.Column(spacing=3, controls=[
+                        ft.Row(spacing=6, controls=[
+                            ft.Icon(icone, size=15, color=cor_texto),
+                            ft.Text(titulo, size=12, color=cor_texto,
+                                    weight=ft.FontWeight.W_600)]),
+                        ft.Text(brl(valor), size=21, weight=ft.FontWeight.BOLD,
+                                color=cor_texto),
+                        ft.Text(legenda, size=11, color=ft.Colors.GREY_600),
+                    ]))
+
+            liquido = q['total_liquido_a_receber']
+            legenda_receber = ("nada no cartão hoje" if not q['a_receber']
+                               else f"bruto {brl(q['total_bruto_a_receber'])} "
+                                    f"− {brl(q['total_taxas'])} de taxa")
+            cartoes = ft.Row(spacing=12, controls=[
+                cartao_valor("Na gaveta", q['gaveta'], "dinheiro, dá para contar",
+                             ft.Colors.GREEN_50, ft.Colors.GREEN_800, ft.Icons.PAYMENTS),
+                cartao_valor("Já na conta", q['total_ja_caiu'], "pix/transferência, caiu na hora",
+                             ft.Colors.BLUE_50, ft.Colors.BLUE_800, ft.Icons.ACCOUNT_BALANCE),
+                cartao_valor("Ainda vai cair", liquido, legenda_receber,
+                             ft.Colors.AMBER_50, ft.Colors.AMBER_900, ft.Icons.SCHEDULE),
+            ])
+
+            corpo = [cartoes]
+
+            # Detalhe do cartão: bruto → líquido, taxa e a data prevista de crédito.
+            # É a resposta para "quanto eu tenho a receber e quando".
+            if q['a_receber']:
+                detalhe = []
+                for l in q['a_receber']:
+                    dias = l['prazo_dias']
+                    detalhe.append(ft.Row(
+                        spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(width=150, content=ft.Text(l['rotulo'], size=13)),
+                            ft.Text(brl(l['bruto']), size=13, color=ft.Colors.GREY_600),
+                            ft.Icon(ft.Icons.ARROW_FORWARD, size=13, color=ft.Colors.GREY_500),
+                            ft.Text(brl(l['liquido']), size=13, weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.AMBER_900),
+                            ft.Text(f"(−{pct_fmt(l['percentual'])} = {brl(l['taxa_valor'])})",
+                                    size=12, color=ft.Colors.RED_400),
+                            ft.Container(
+                                padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                border_radius=20, bgcolor=ft.Colors.GREY_100,
+                                content=ft.Text(
+                                    f"cai em {fmt_date(l['previsao'])} "
+                                    f"({dias} dia{'s' if dias != 1 else ''})",
+                                    size=11, color=ft.Colors.GREY_700)),
+                        ]))
+                corpo.append(ft.Column(spacing=6, controls=detalhe))
+
+            # Despesa paga no cartão da empresa vira fatura — não desconta do que a
+            # maquininha vai repassar. Fica como nota para o número não parecer errado.
+            if q['saidas_no_cartao']:
+                txt = " · ".join(f"{l['rotulo']}: {brl(l['valor'])}"
+                                 for l in q['saidas_no_cartao'])
+                corpo.append(ft.Text(
+                    f"Saídas pagas no cartão ({txt}) não abatem o valor a receber — "
+                    "elas entram na fatura.", size=11, color=ft.Colors.GREY_600,
+                    italic=True))
+
+            corpo.append(ft.Divider(height=1))
+            corpo.append(ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                    ft.Row(spacing=6, controls=[
+                        ft.Text("Total do dia, já descontadas as taxas:", size=13,
+                                color=ft.Colors.GREY_700),
+                        ft.Text(brl(q['total_geral']), size=15,
+                                weight=ft.FontWeight.BOLD, color=COR_PRIMARIA)]),
+                    ft.TextButton("Taxas das maquininhas", icon=ft.Icons.PERCENT,
+                                  on_click=lambda e: form_taxas()),
+                ]))
+
+            return ft.Container(
+                padding=20, bgcolor=COR_CARD, border_radius=12,
+                shadow=ft.BoxShadow(blur_radius=10,
+                                    color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK)),
+                content=ft.Column(spacing=14, controls=[
+                    ft.Row(spacing=10, controls=[
+                        ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, color=COR_PRIMARIA),
+                        ft.Text("Onde está o dinheiro", size=18,
+                                weight=ft.FontWeight.BOLD),
+                    ]),
+                    *corpo,
+                ]))
+
         def painel_aberto(aberto):
             # 'aberto' = tupla de caixa.caixa_aberto(): (id, abertura, fundo, id_func).
             id_caixa, data_ab, valor_ini, id_func = aberto
@@ -5142,6 +5312,7 @@ def main(page: ft.Page):
                                       italic=True)
             return ft.Column(spacing=20, controls=[
                 cabecalho_painel,
+                bloco_onde_dinheiro(id_caixa),
                 card_tabela("Movimentos do caixa", ft.Column([tabela_movs], expand=True,
                                                              scroll=ft.ScrollMode.AUTO)),
             ])

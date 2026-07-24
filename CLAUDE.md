@@ -68,7 +68,7 @@ ao `DB_config` em `conexao.py`.
 
 ---
 
-## Schema por módulo (22 tabelas)
+## Schema por módulo (23 tabelas)
 
 | # | Módulo | Tabelas | Arquivo .py | Status |
 |---|--------|---------|-------------|--------|
@@ -81,7 +81,7 @@ ao `DB_config` em `conexao.py`.
 | 7 | Estoque | `produto`, `movimentacao_estoque` | `estoque.py` | ✅ CRUD + revisão 21/07 |
 | 8 | Fornecedores | `fornecedor` | `fornecedores.py` | ✅ CRUD + revisão 21/07 |
 | 9 | Despesa | `despesa` | `despesa.py` | ✅ CRUD feito |
-| 10 | Caixa | `caixa`, `caixa_movimento` | `caixa.py` | ✅ CRUD + revisão 22/07 |
+| 10 | Caixa | `caixa`, `caixa_movimento`, `taxa_pagamento` | `caixa.py` | ✅ CRUD + revisão 22/07 + "Onde está o dinheiro" 23/07 |
 | 11 | Dashboard | *(sem tabela — só consultas)* | `dashboard.py` | ✅ consultas feitas |
 | 12 | Fidelidade | `fidelidade_saldo`, `fidelidade_movimento` | `fidelidade.py` | ✅ CRUD feito |
 | 13 | Planos e Assinaturas | `plano`, `plano_servico`, `assinatura`, `assinatura_uso` | `planos_assinaturas.py` | ✅ CRUD feito |
@@ -150,7 +150,7 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 
 ## Estado atual / Próximos passos
 
-- Schema completo já criado no `lavajato_db` (22 tabelas, FKs íntegras).
+- Schema completo já criado no `lavajato_db` (23 tabelas, FKs íntegras).
 - **Backend dos 13 módulos completo** (CRUD nos módulos 1–10, 12 e 13; consultas de
   indicadores no 11 — `dashboard.py`).
 - Dados de teste no banco: `categoria_veiculo` (7 portes), `cliente` (id 1), `servico` (id 1 com preços),
@@ -480,35 +480,53 @@ problema era **conceitual**, do tipo que só aparece no balcão.
 ✅ **Conferido na tela em 2026-07-22** pelo Lucas: abrir e fechar caixa funcionando, e a
 saída da despesa caindo no caixa como esperado.
 
-**🔜 PRÓXIMO (combinado em 22/07, para começar em 23/07) — "Onde está o dinheiro" (etapa 1).**
-Pergunta do Lucas depois de conferir a tela: *"o cliente não vai saber o valor que tem no
-banco"*. Verdade — o dinheiro de pix/cartão some da tela depois do fechamento. **Mas um
-campo "saldo em banco" recriaria o bug que acabamos de matar**: o crédito não cai na hora
-nem inteiro (R$ 100 hoje ≈ R$ 96,50 em 30 dias, taxa ~3,5%; débito ~2% em D+1), e a conta
-real ainda tem taxa bancária, retirada do dono e imposto, que o sistema nunca vê — em uma
-semana o número diverge do extrato e o dono para de olhar.
-**Decisão: não espelhar o banco.** O saldo do banco quem sabe é o banco; o que o sistema
-sabe e o banco não é **de quais vendas** veio o dinheiro, **quanto ainda vai cair** e
-**quanto se perdeu de taxa**. Então a etapa 1 é um quadro só-leitura, 100% verdadeiro,
-montado do `caixa_movimento` que já existe — **sem tabela nova**:
-```
-DINHEIRO (gaveta) ... conferido no fechamento
-PIX (já caiu) ....... valor cheio
-CARTÃO A RECEBER .... bruto + líquido, quebrado por débito (D+1) e crédito (D+30)
-```
-Precisa de um cadastro simples de **taxa % e prazo em dias por forma de pagamento**
-(~5 linhas de configuração). **Etapa 2, só se o Lucas quiser depois:** `conta_bancaria`
-com o mesmo padrão do caixa — o dono **informa** o saldo real (como conta a gaveta), o
-sistema mostra o esperado e a diferença vira conciliação.
+3. ✅ **"Onde está o dinheiro" — etapa 1 (2026-07-23).** Pergunta do Lucas depois de
+   conferir a tela: *"o cliente não vai saber o valor que tem no banco"*. Verdade — o
+   dinheiro de pix/cartão sumia da tela depois do fechamento. **Mas um campo "saldo em
+   banco" recriaria o bug que a revisão de 22/07 matou**: o crédito não cai na hora nem
+   inteiro (R$ 100 ≈ R$ 96,50 em 30 dias, taxa ~3,5%; débito ~2% em D+1), e a conta real
+   ainda tem taxa bancária, retirada do dono e imposto, que o sistema nunca vê — em uma
+   semana o número diverge do extrato e o dono para de olhar.
+   **Decisão mantida: não espelhar o banco.** O saldo do banco quem sabe é o banco; o que
+   o sistema sabe e o banco não é **de quais vendas** veio o dinheiro, **quanto ainda vai
+   cair** e **quanto se perdeu de taxa**. Feito:
+   - **Tabela `taxa_pagamento`** (`forma` PK, `rotulo`, `percentual`, `prazo_dias`, `ordem`)
+     com seed das 5 formas (dinheiro/pix/transferência 0%·0d, débito 2%·D+1, crédito
+     3,5%·D+30) e `CHECK` de 0–100% / prazo ≥ 0. É **editável pela tela** (botão "Taxas das
+     maquininhas" no bloco) porque a taxa muda quando o dono renegocia com a adquirente —
+     deixá-la no código viraria "reempacotar o .exe para trocar um número".
+     Backend: `taxas_pagamento()` (dict por forma) e `salvar_taxa()` (UPSERT, valida
+     **antes** de abrir conexão, aceita vírgula decimal).
+   - **`onde_esta_o_dinheiro(id_caixa=None)`** monta o quadro 100% do `caixa_movimento`:
+     `gaveta` (= `esperado_dinheiro`), `ja_caiu` (prazo 0 — pix/transferência),
+     `a_receber` (prazo > 0 — cartão, com bruto → líquido, valor da taxa e **data prevista**),
+     mais os totais e `total_geral` (gaveta + já caiu + líquido). Duas regras que só
+     aparecem no balcão: **saída em pix ABATE** (a despesa saiu da mesma conta em que a
+     venda entrou), mas **saída no cartão NÃO abate** o recebível da maquininha (vira
+     fatura, outro bolso) — ela sai da conta e vira uma nota na tela. Forma sem cadastro
+     cai em `TAXA_PADRAO` (0%/0d): o sistema não inventa desconto que não sabe explicar.
+   - **Previsão contada da abertura do caixa**, não de "hoje" — conferindo um caixa de
+     ontem a data continua certa em vez de andar um dia a cada abertura da tela.
+   - **Tela:** bloco "Onde está o dinheiro" no painel do caixa aberto — 3 cartões
+     (Na gaveta / Já na conta / Ainda vai cair) + detalhe por bandeira
+     (`R$ 500,00 → R$ 482,50 (−3,5% = R$ 17,50) · cai em 22/08 (30 dias)`) + total do dia
+     já sem as taxas. Testado contra o banco: **46 checks, 0 falhas** (dados de teste
+     apagados no fim; o teste insere um caixa fechado por SQL de propósito, para não
+     esbarrar na invariante "um caixa aberto por vez" nem atrapalhar o balcão).
 
-**Achado e ainda não feito** (por ordem de retorno): **3.** aviso de caixa esquecido
+**Etapa 2, só se o Lucas quiser depois:** `conta_bancaria` com o mesmo padrão do caixa —
+o dono **informa** o saldo real (como conta a gaveta), o sistema mostra o esperado e a
+diferença vira conciliação.
+
+**Achado e ainda não feito** (por ordem de retorno): **4.** aviso de caixa esquecido
 aberto de dias anteriores (hoje as vendas caem no caixa de anteontem em silêncio e o
-faturamento dos dois dias se mistura); **4.** estorno de movimento errado (digitou 500 em
-vez de 50 → só dá para lançar uma saída falsa que suja o histórico); **5.** conferência no
+faturamento dos dois dias se mistura); **5.** estorno de movimento errado (digitou 500 em
+vez de 50 → só dá para lançar uma saída falsa que suja o histórico); **6.** conferência no
 histórico (a lista mostra fundo e saldo final, mas não o esperado nem a sobra/falta, e não
-dá para clicar num dia e ver os movimentos — `movimentos_do_caixa()` já está pronta);
-**6.** `caixa.observacoes` é **uma coluna só** para abertura e fechamento, então anotar algo
-no fechamento **apaga** a anotação da abertura; **7.** `valor_inicial` sem CHECK no banco e
+dá para clicar num dia e ver os movimentos — `movimentos_do_caixa()` já está pronta; agora
+`onde_esta_o_dinheiro(id_caixa)` também aceita caixa fechado e entraria de graça aí);
+**7.** `caixa.observacoes` é **uma coluna só** para abertura e fechamento, então anotar algo
+no fechamento **apaga** a anotação da abertura; **8.** `valor_inicial` sem CHECK no banco e
 sem validação em `abrir_caixa()` — dá para abrir caixa com fundo negativo (mesma família de
 bug do Estoque); e `abrir_caixa()` tem TOCTOU (checa e insere) — um índice único parcial
 `WHERE status='aberto'` tornaria a invariante real no banco.
@@ -516,14 +534,15 @@ bug do Estoque); e `abrir_caixa()` tem TOCTOU (checa e insere) — um índice ú
 aviso ao fechar de **comandas entregues hoje sem pagamento** (pega carro que saiu sem
 cobrar); sangria/suprimento como tipo próprio; resumo do dia no fechamento.
 
-⚠️ **Pendente de conferência na tela.** Backend testado contra o banco e `app.py` compila,
-mas as telas não foram vistas rodando. Roteiro (operador navegando):
-- **Caixa:** abrir caixa → Entrada de R$ 100 em **Pix** → o painel deve mostrar
-  **"Na gaveta"** sem o pix e **"Giro do dia"** com ele, e um chip cinza "Pix +R$ 100,00".
-- **Fechar caixa:** a faixa âmbar *"Não conte estes"* deve listar o pix, e contar só o
-  dinheiro deve fechar **"bateu certinho"**.
-- **Despesas:** marcar uma despesa como paga (data de hoje) → mensagem *"Saída de R$ X
-  lançada no caixa"*, e o movimento aparece na tela Caixa com Ref. `desp #N`.
+✅ **Conferido na tela em 2026-07-23** (Lucas navegando, assistente só capturando —
+caixa #12 de teste, apagado no fim junto com os 2 movimentos; taxa restaurada a 3,5%):
+entrada de R$ 500 no crédito → "Ainda vai cair" R$ 482,50 com
+`R$ 500,00 → R$ 482,50 (−3,5% = R$ 17,50) · cai em 23/08 (30 dias)` e a gaveta **intacta**;
+entrada de R$ 120 em Pix → "Já na conta" pelo valor cheio, sem encostar na gaveta nem no
+a receber; "Taxas das maquininhas" com 4,99% → líquido virou R$ 475,05 na hora.
+Totais bateram nos três passos (630 + 120 + 475,05 = 1.225,05, contra o giro de 1.250,00).
+Sobrou do roteiro de 22/07 (não conferido ainda): ao **fechar**, a faixa âmbar *"Não conte
+estes"* deve listar pix e cartão, e contar só o dinheiro deve fechar "bateu certinho".
 
 ### Dívidas estruturais do projeto (levantadas em 2026-07-21, nada feito)
 Diagnóstico pedido pelo Lucas ("esse sistema foi bem estruturado certo?"). Resumo: **a dívida

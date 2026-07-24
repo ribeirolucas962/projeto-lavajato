@@ -348,6 +348,35 @@ CREATE INDEX IF NOT EXISTS idx_caixa_movimento_caixa ON caixa_movimento(id_caixa
 CREATE INDEX IF NOT EXISTS idx_caixa_movimento_despesa ON caixa_movimento(id_despesa);
 
 
+-- Taxa e prazo de cada forma de pagamento — o que a maquininha desconta e em
+-- quantos dias o dinheiro cai na conta. É o cadastro que sustenta o quadro
+-- "Onde está o dinheiro": sem ele o sistema mostraria R$ 100 de crédito como
+-- se fossem R$ 100 disponíveis hoje, quando na verdade são ~R$ 96,50 em 30 dias.
+-- Os valores do seed são a média do mercado; o dono ajusta pela tela do Caixa
+-- com o que negociou com a adquirente dele.
+CREATE TABLE IF NOT EXISTS taxa_pagamento (
+    forma          VARCHAR(20) PRIMARY KEY,   -- mesma string gravada em caixa_movimento
+    rotulo         VARCHAR(40) NOT NULL,      -- nome que aparece na tela
+    percentual     NUMERIC(5,2) NOT NULL DEFAULT 0
+                       CHECK (percentual >= 0 AND percentual <= 100),
+    prazo_dias     SMALLINT NOT NULL DEFAULT 0 CHECK (prazo_dias >= 0),
+    ordem          SMALLINT NOT NULL DEFAULT 0,   -- ordem de exibição
+    atualizado_em  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO taxa_pagamento (forma, rotulo, percentual, prazo_dias, ordem) VALUES
+    ('dinheiro',       'Dinheiro',           0.00,  0, 1),
+    ('pix',            'Pix',                0.00,  0, 2),
+    ('cartao_debito',  'Cartão de débito',   2.00,  1, 3),
+    ('cartao_credito', 'Cartão de crédito',  3.50, 30, 4),
+    ('transferencia',  'Transferência',      0.00,  0, 5)
+ON CONFLICT (forma) DO NOTHING;
+
+COMMENT ON TABLE  taxa_pagamento            IS 'Taxa (%) e prazo (dias) de cada forma de pagamento — base do quadro "Onde está o dinheiro"';
+COMMENT ON COLUMN taxa_pagamento.percentual IS 'Percentual descontado pela adquirente (0 para dinheiro/pix)';
+COMMENT ON COLUMN taxa_pagamento.prazo_dias IS 'Dias até o dinheiro cair na conta (0 = na hora; débito ~1; crédito ~30)';
+
+
 -- ================================================================
 -- MÓDULO 12 - FIDELIDADE (saldo + movimentações de pontos)
 -- ================================================================
