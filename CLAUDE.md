@@ -96,7 +96,7 @@ Risco alto, ganho baixo — o efeito prático é um horário 3h à frente em reg
 | 3 | Catálogo (serviços e preços) | `servico`, `servico_preco` | `catalogo_servicos.py` | ✅ CRUD + revisão 21/07 |
 | 4 | Agendamento | `agendamento`, `agendamento_servico` | `agendamento.py` | ✅ CRUD feito |
 | 5 | Ordem de Serviço (comanda) | `ordem_servico`, `ordem_servico_item` | `ordem_servico.py` | ✅ CRUD feito |
-| 6 | Funcionário | `funcionario` | `funcionario.py` | ✅ CRUD feito |
+| 6 | Funcionário | `funcionario` | `funcionario.py` | ✅ CRUD + comissão 24/07 |
 | 7 | Estoque | `produto`, `movimentacao_estoque` | `estoque.py` | ✅ CRUD + revisão 21/07 |
 | 8 | Fornecedores | `fornecedor` | `fornecedores.py` | ✅ CRUD + revisão 21/07 |
 | 9 | Despesa | `despesa` | `despesa.py` | ✅ CRUD feito |
@@ -562,6 +562,125 @@ a receber; "Taxas das maquininhas" com 4,99% → líquido virou R$ 475,05 na hor
 Totais bateram nos três passos (630 + 120 + 475,05 = 1.225,05, contra o giro de 1.250,00).
 Sobrou do roteiro de 22/07 (não conferido ainda): ao **fechar**, a faixa âmbar *"Não conte
 estes"* deve listar pix e cartão, e contar só o dinheiro deve fechar "bateu certinho".
+
+### Módulo 6 (Funcionário) — comissão da equipe (2026-07-24)
+`funcionario.comissao_percentual` era a **terceira coluna órfã** do projeto (depois do
+`preco_venda` no Estoque e do `id_despesa` no Caixa): cadastrada no formulário, exibida na
+lista e **nenhuma linha do projeto calculava nada com ela** — o fechamento do mês era na
+mão, fora do sistema. Os dados já estavam todos lá desde o "Quem lavou"
+(`ordem_servico_item.id_funcionario` grava o executor de cada item), faltava só cruzar.
+
+**Backend** (`funcionario.py`, 46 checks contra o banco: 29 + 10 de helpers + 7 de
+renderização; dados de teste apagados no fim):
+- **`comissao_periodo(data_inicio, data_fim, id_funcionario=None)`** — a folha do período.
+  Devolve dict com `funcionarios` (lista de dicts), `total_bruto`/`total_base`/`total_comissao`
+  e `sem_responsavel`. Só entra quem executou algo no período; inclui **inativo que
+  trabalhou antes de sair** (senão o último mês dele sumiria).
+- **`comissao_detalhe(id_funcionario, ...)`** — serviço a serviço (data, comanda, cliente,
+  placa, serviço, bruto, base, comissão). É a conferência de "de onde saiu esse valor"
+  quando o lavador contesta o pagamento.
+
+**Três decisões que mudam o valor pago** (documentadas no topo do bloco em `funcionario.py`):
+1. **Quais comandas contam:** status `finalizado`/`entregue`, por `entrada_em` — o **mesmo
+   critério do `dashboard.py`** e da ficha do cliente, que é o que faz os números baterem
+   entre as telas. Cancelada não paga comissão.
+2. **Sobre qual valor:** desconto e acréscimo vivem na **comanda**, não no item, então são
+   **rateados proporcionalmente** entre os serviços (CTE `comanda` com o `fator` =
+   valor_final / valor_total). Comanda de R$ 100 fechada por R$ 90: o serviço de R$ 100
+   entra como R$ 90 na base. Sem o rateio, o dono daria 10% de desconto e pagaria comissão
+   cheia. `NULLIF` + `COALESCE` seguram a divisão por zero (comanda de total 0 → fator 1:
+   sem base para ratear, não se inventa desconto).
+3. **Só serviço:** item de produto (venda de balcão) fica de fora — comissão é sobre mão de
+   obra. O valor do item é `quantidade * preco_aplicado` (o `preco_aplicado` é **unitário**).
+
+**Serviço sem "Quem lavou" volta à parte** (`sem_responsavel`): não entra na comissão de
+ninguém, e sem esse aviso o dinheiro sumiria da folha em silêncio. A tela mostra numa faixa
+âmbar — é o lembrete de preencher o executor na comanda.
+
+**Tela:** botão **"Comissões"** no cabeçalho de Funcionários → diálogo com período
+(campos com máscara dd/mm/aaaa + atalhos "Este mês"/"Mês passado"), 4 mini-cards, a faixa
+âmbar dos órfãos, a tabela (Funcionário · % · Comandas · Serviços · **Bruto** · **Base** ·
+**A pagar**) e o ícone de recibo por linha abrindo o detalhe. Bruto e base aparecem lado a
+lado **de propósito**: sem isso o rateio do desconto vira número mágico e o operador não
+sabe explicar ao funcionário. Quem tem 0% aparece com "sem %" em cinza (trabalhou, mas não
+recebe comissão) em vez de sumir — produtividade continua visível.
+- ⚠️ O período **recalcula dentro do mesmo diálogo** (só o corpo é remontado). Reabrir
+  diálogo a cada troca de data esbarraria na regra de um diálogo por vez do Flet 0.85.
+  O detalhe fecha o resumo antes de abrir, e o "Voltar" faz o caminho inverso.
+- ⚠️ **Diálogo com tabela larga — 3 armadilhas, todas achadas na tela (24–25/07).** O
+  detalhe abria espremido e **sem as colunas Bruto/Base/Comissão**, que são o motivo da
+  tela existir. Foram três causas somadas:
+  1. **`tight=True` sem `height`:** `ft.Column(tight=True, ...)` dentro de Container sem
+     altura encolhe ao conteúdo e, com `scroll`, colapsa o diálogo. Receita:
+     `ft.Container(width=…, height=…, content=ft.Column(scroll=…))` — altura explícita e
+     **sem `tight`**, como as fichas de cliente/veículo (720x520) já faziam.
+  2. **Largura fixa não serve:** 900 px cabem num notebook, mas viram **um quarto da tela**
+     num monitor de 3456 px — e a tabela cortava fora da área visível. Novo helper
+     **`medida_dialogo()`** (escopo do `main`) devolve largura/altura proporcionais a
+     `page.width`/`page.height`, com piso, teto e **altura que cresce com o nº de linhas**
+     (altura fixa deixava metade do diálogo vazio com 2 linhas).
+  3. **`column_spacing` padrão do DataTable é 56 px:** com 8 colunas são ~390 px só de
+     espaço vazio, o que sozinho já empurrava as colunas de dinheiro para fora. Usar
+     `column_spacing=18` e **encurtar texto longo** (nome do cliente com `…` + `tooltip`
+     com o valor inteiro). Só o `ft.Row(scroll=…)` em volta **não resolve**: a rolagem
+     lateral existe, mas ninguém adivinha que precisa rolar.
+
+✅ **Conferido na tela em 2026-07-25** (assistente navegando, só em telas de leitura;
+banco conferido antes e depois — 2 funcionários, 8 comandas, **nada gravado**):
+Funcionários → Comissões → folha com as 8 colunas visíveis (João Lavador, 5%, bruto
+R$ 550,00, base R$ 600,00, a pagar R$ 30,00) → detalhe com os 2 serviços
+(#8 bruto 300 → base 350 = R$ 17,50 e #7 250 → 250 = R$ 12,50, somando os R$ 30,00 da
+folha, o que também prova o **rateio do acréscimo**) → **"Voltar" reabre o resumo sem
+diálogo fantasma** e "Fechar" sai limpo.
+⚠️ Notas de quem for repetir o teste: a janela **desmaximiza sozinha** ao navegar (o
+script de clique precisa validar as coordenadas contra o rect a cada passo, senão clica
+fora); com a janela em 1180x740 o menu lateral **não mostra "Funcionários"** (fica abaixo
+da dobra); e o primeiro clique após dar foco continua sendo engolido.
+- Helper novo `iso_para_br()` no topo do `app.py` (data ISO → dd/mm/aaaa).
+- Escrito já com **dicts em vez de tuplas por posição** — é a dívida estrutural nº 2, a
+  única cujo custo cresce a cada tela nova; código novo não deve aumentá-la.
+
+Ainda não visto na tela: a faixa âmbar de **serviços sem "Quem lavou"** (hoje todos os
+itens do banco têm executor) e o rótulo cinza **"sem %"** (o funcionário 2, com 0%, só
+apareceria na folha se executasse algum serviço).
+
+**Achado não corrigido (bomba-relógio, não bug ativo):** `ordem_servico._recalcular_total()`
+soma `SUM(preco_aplicado)` **ignorando a `quantidade`**, embora o `preco_aplicado` seja
+documentado como preço **unitário**. Hoje todo item nasce com `quantidade = 1`, então nada
+quebra; no dia em que a venda de produto na comanda for implementada (item da fila do
+módulo 7), 3 unidades de cera passarão a ser cobradas como 1. As funções de comissão já
+usam `quantidade * preco_aplicado`, então ficam certas quando o `_recalcular_total` for
+corrigido.
+
+### As "pontes que faltam" (levantadas em 2026-07-24)
+Diagnóstico pedido pelo Lucas ("tem mais algo que podemos melhorar?"). O projeto tem um
+padrão de falha próprio, que já apareceu quatro vezes: **o dado existe no banco, a função
+existe no módulo, e ninguém liga uma coisa na outra** — daí a tela mostra um número que
+não é verdade. Já resolvidas: Comanda→Caixa (16/07), Despesa→Caixa (22/07), comissão (24/07).
+Ainda abertas, por ordem de retorno:
+1. **Comanda→Fidelidade.** `acumular_pontos()` só é chamada da tela de Fidelidade
+   (`app.py`, botão manual): o ponto só entra se o atendente lembrar de abrir a tela e
+   digitar. Na prática o programa de pontos **não funciona** — o cliente lava 10 vezes e
+   continua zerado.
+2. **Comanda→Assinatura.** `planos_assinaturas.registrar_uso()` está pronta e testada e
+   **nenhuma linha do `app.py` chama**. O cliente do plano de 4 lavagens/mês aparece com 4
+   disponíveis para sempre **e ainda é cobrado o valor cheio na comanda** — erra nos dois
+   sentidos (cobra quem já pagou, não controla quem estoura o plano). É a que mexe em
+   dinheiro de verdade.
+3. **Comanda→Estoque** (a "baixa automática" já listada no módulo 7): saída 100% manual,
+   então o saldo é ficção.
+
+**O bug do COALESCE ainda vive em 4 módulos** — `despesa.py`, `funcionario.py`,
+`ordem_servico.py` e `planos_assinaturas.py` (foi corrigido em cliente, veículo,
+agendamento, serviço, produto e fornecedor). O mais grave é `despesa.py`:
+`data_pagamento = COALESCE(%s, data_pagamento)` torna **impossível estornar uma despesa
+marcada como paga por engano** — e desde 22/07 marcar como paga **lança saída no caixa**,
+então o dinheiro sai e não há botão de volta. Mesma coisa em
+`ordem_servico.salvar_financeiro()` (não dá para desfazer um pagamento registrado errado).
+
+**Módulos nunca revisados:** 5 (Ordem de Serviço), 9, 12 e 13. Os quatro revisados renderam
+4, 7, 5 e 7 problemas cada; o **módulo 5 é o que mais roda no balcão** e por onde passa
+todo o dinheiro.
 
 ### Dívidas estruturais do projeto (levantadas em 2026-07-21, nada feito)
 Diagnóstico pedido pelo Lucas ("esse sistema foi bem estruturado certo?"). Resumo: **a dívida

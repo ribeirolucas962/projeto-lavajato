@@ -129,6 +129,14 @@ def fmt_date(d):
         return "—"
 
 
+def iso_para_br(texto):
+    """Converte uma data ISO ('2026-07-24') para 'dd/mm/aaaa'. Tolerante a lixo."""
+    try:
+        return datetime.strptime(texto, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return texto or "—"
+
+
 def qtd_fmt(v):
     """Formata quantidade (NUMERIC) sem zeros à toa: 10.000 -> '10', 7.5 -> '7,5'."""
     try:
@@ -850,6 +858,25 @@ def main(page: ft.Page):
                 ),
             ]),
         )
+
+    def medida_dialogo(linhas=0, altura_fixa=240, por_linha=48,
+                       largura_max=1500, altura_max=760):
+        """
+        Tamanho de um diálogo com tabela, proporcional à JANELA.
+
+        Largura fixa não serve: o app roda de notebook a monitor 4K, e um valor
+        que cabe em 1366 px vira um quarto da tela em 3456 px — foi assim que as
+        colunas de dinheiro da comissão ficaram cortadas fora da área visível
+        (achado na tela em 25/07). Aqui a largura acompanha a janela, com teto
+        para a linha não ficar longa demais para ler.
+
+        A altura cresce com o número de linhas até um teto, em vez de ser fixa:
+        com 2 linhas, uma altura fixa de 520 deixava metade do diálogo vazio.
+        """
+        larg = max(700, min(largura_max, (page.width or 1200) * 0.78))
+        alt = max(300, min(altura_max, (page.height or 800) * 0.85,
+                           altura_fixa + linhas * por_linha))
+        return larg, alt
 
     def card_tabela(titulo, tabela):
         # "Moldura" branca padrão em volta de uma tabela (título + divisor + corpo
@@ -3845,6 +3872,282 @@ def main(page: ft.Page):
                 ],
             ))
 
+        # ---- Comissões do período (fechamento para pagar a equipe) ----
+        def abrir_comissoes():
+            """
+            Quanto cada um tem a receber no período. Cruza "Quem lavou" (gravado por
+            item na comanda) com o % de cada funcionário — ver funcionario.py.
+            O período recalcula DENTRO do mesmo diálogo (só o corpo é remontado):
+            reabrir diálogo a cada troca de data esbarraria na regra de um por vez.
+            """
+            hoje_dt = datetime.now()
+            f_ini = ft.TextField(label="De", width=150,
+                                 value=hoje_dt.replace(day=1).strftime("%d/%m/%Y"))
+            f_fim = ft.TextField(label="Até", width=150,
+                                 value=hoje_dt.strftime("%d/%m/%Y"))
+            def mascarar_data(campo):
+                def _on_change(e):
+                    campo.value = val.mascara_data(campo.value)
+                    page.update()
+                return _on_change
+
+            f_ini.on_change = mascarar_data(f_ini)
+            f_fim.on_change = mascarar_data(f_fim)
+            erro_periodo = ft.Text("", color=ft.Colors.RED_400, size=12)
+            corpo = ft.Column(tight=True, spacing=14)
+            # Quantas pessoas a última consulta trouxe — usado só para dimensionar o
+            # diálogo (dict porque recalcular() é aninhada e precisa escrever aqui).
+            ultimo = {"pessoas": 0}
+
+            def periodo_iso():
+                """(inicio, fim) em ISO, ou None se as datas não formarem um período."""
+                try:
+                    ini = datetime.strptime((f_ini.value or "").strip(), "%d/%m/%Y")
+                    fim = datetime.strptime((f_fim.value or "").strip(), "%d/%m/%Y")
+                except ValueError:
+                    erro_periodo.value = "Datas inválidas — use dd/mm/aaaa nos dois campos."
+                    return None
+                if fim < ini:
+                    erro_periodo.value = "A data final é anterior à inicial."
+                    return None
+                erro_periodo.value = ""
+                return ini.strftime("%Y-%m-%d"), fim.strftime("%Y-%m-%d")
+
+            def mini_card(titulo, valor, icone, cor):
+                return ft.Container(
+                    width=175, padding=12, bgcolor=ft.Colors.GREY_50, border_radius=10,
+                    content=ft.Column(spacing=2, controls=[
+                        ft.Row(spacing=6, controls=[
+                            ft.Icon(icone, size=16, color=cor),
+                            ft.Text(titulo, size=11, color=ft.Colors.GREY_700)]),
+                        ft.Text(str(valor), size=17, weight=ft.FontWeight.BOLD, color=cor),
+                    ]),
+                )
+
+            def recalcular(e=None):
+                periodo = periodo_iso()
+                if not periodo:
+                    corpo.controls = []
+                    page.update()
+                    return
+                ini, fim = periodo
+                res = mod_func.comissao_periodo(data_inicio=ini, data_fim=fim)
+                linhas_f = res["funcionarios"]
+                ultimo["pessoas"] = len(linhas_f)
+
+                cards = ft.Row(wrap=True, spacing=10, run_spacing=10, controls=[
+                    mini_card("Total a pagar", brl(res["total_comissao"]),
+                              ft.Icons.PAYMENTS, ft.Colors.GREEN_700),
+                    mini_card("Serviços no período",
+                              sum(f["servicos"] for f in linhas_f),
+                              ft.Icons.LOCAL_CAR_WASH, COR_PRIMARIA),
+                    mini_card("Base de cálculo", brl(res["total_base"]),
+                              ft.Icons.PRICE_CHECK, ft.Colors.CYAN_700),
+                    mini_card("Pessoas na folha", len(linhas_f),
+                              ft.Icons.GROUPS, ft.Colors.PURPLE_700),
+                ])
+
+                blocos = [cards]
+
+                # Serviço sem "Quem lavou" não entra na comissão de ninguém: sem este
+                # aviso, o dinheiro simplesmente não apareceria na folha e ninguém veria.
+                orfaos = res["sem_responsavel"]
+                if orfaos["servicos"]:
+                    blocos.append(ft.Container(
+                        padding=12, border_radius=8, bgcolor=ft.Colors.AMBER_50,
+                        border=ft.Border.all(1, ft.Colors.AMBER_300),
+                        content=ft.Row(spacing=10, controls=[
+                            ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.AMBER_800, size=20),
+                            ft.Column(spacing=2, expand=True, controls=[
+                                ft.Text(f"{orfaos['servicos']} serviço(s) sem \"Quem lavou\" "
+                                        f"— {brl(orfaos['valor'])} fora da comissão",
+                                        weight=ft.FontWeight.W_600, color=ft.Colors.AMBER_900),
+                                ft.Text("Estes serviços não entraram na conta de ninguém. "
+                                        "Preencha o executor na comanda para que contem.",
+                                        size=12, color=ft.Colors.AMBER_900),
+                            ]),
+                        ]),
+                    ))
+
+                if not linhas_f:
+                    blocos.append(ft.Container(
+                        padding=30, alignment=ft.Alignment.CENTER,
+                        content=ft.Text("Nenhum serviço com executor neste período.",
+                                        color=ft.Colors.GREY_500)))
+                else:
+                    linhas_tab = []
+                    for f in linhas_f:
+                        pct = float(f["percentual"] or 0)
+                        # Percentual zerado: trabalhou, mas não recebe comissão. Marcado
+                        # em cinza para o dono não achar que o cálculo falhou.
+                        rotulo_pct = (f"{pct:g}%" if pct else "sem %")
+                        linhas_tab.append(ft.DataRow(cells=[
+                            ft.DataCell(ft.Row(spacing=6, controls=[
+                                ft.Text(f["nome"] or ""),
+                                *([] if f["ativo"] else [ft.Container(
+                                    padding=ft.Padding.symmetric(horizontal=6, vertical=1),
+                                    border_radius=20, bgcolor=ft.Colors.GREY_300,
+                                    content=ft.Text("inativo", size=10,
+                                                    color=ft.Colors.GREY_700))]),
+                            ])),
+                            ft.DataCell(ft.Text(rotulo_pct,
+                                                color=None if pct else ft.Colors.GREY_500)),
+                            ft.DataCell(ft.Text(str(f["comandas"]))),
+                            ft.DataCell(ft.Text(str(f["servicos"]))),
+                            ft.DataCell(ft.Text(brl(f["bruto"]), color=ft.Colors.GREY_600)),
+                            ft.DataCell(ft.Text(brl(f["base"]))),
+                            ft.DataCell(ft.Text(brl(f["comissao"]),
+                                                weight=ft.FontWeight.BOLD,
+                                                color=ft.Colors.GREEN_800)),
+                            ft.DataCell(ft.IconButton(
+                                ft.Icons.RECEIPT_LONG, icon_color=COR_PRIMARIA,
+                                tooltip="Ver serviço a serviço",
+                                on_click=lambda e, ff=f, i=ini, j=fim: abrir_detalhe(ff, i, j))),
+                        ]))
+                    # Row com scroll: 8 colunas passam da largura do diálogo em tela
+                    # pequena — sem isso as colunas de dinheiro ficam cortadas.
+                    blocos.append(ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
+                        heading_row_color=ft.Colors.GREY_50,
+                        column_spacing=18,
+                        columns=[
+                            ft.DataColumn(ft.Text("Funcionário")),
+                            ft.DataColumn(ft.Text("%")),
+                            ft.DataColumn(ft.Text("Comandas")),
+                            ft.DataColumn(ft.Text("Serviços")),
+                            ft.DataColumn(ft.Text("Bruto")),
+                            ft.DataColumn(ft.Text("Base")),
+                            ft.DataColumn(ft.Text("A pagar")),
+                            ft.DataColumn(ft.Text("")),
+                        ],
+                        rows=linhas_tab,
+                    )]))
+                    blocos.append(ft.Text(
+                        "Bruto = preço cheio dos serviços. Base = já com o desconto (ou "
+                        "acréscimo) da comanda rateado. A pagar = base × %. Contam as "
+                        "comandas finalizadas ou entregues.",
+                        size=11, color=ft.Colors.GREY_600))
+
+                corpo.controls = blocos
+                page.update()
+
+            def periodo_rapido(qual):
+                agora = datetime.now()
+                if qual == "mes":
+                    ini, fim = agora.replace(day=1), agora
+                else:  # mês passado, do dia 1 ao último dia
+                    fim = agora.replace(day=1) - timedelta(days=1)
+                    ini = fim.replace(day=1)
+                f_ini.value = ini.strftime("%d/%m/%Y")
+                f_fim.value = fim.strftime("%d/%m/%Y")
+                recalcular()
+
+            f_ini.on_blur = recalcular
+            f_fim.on_blur = recalcular
+            recalcular()
+
+            # Dimensiona pela quantidade de gente na folha (o recalcular acima já
+            # preencheu 'ultimo'). +1 linha de folga para a faixa de órfãos.
+            larg, alt = medida_dialogo(linhas=ultimo["pessoas"] + 1, altura_fixa=330)
+
+            abrir_dialog(ft.AlertDialog(
+                modal=True, title_padding=0,
+                title=cabecalho_dialog("Comissões do período", ft.Icons.PAYMENTS),
+                # width/height explícitos e Column SEM tight: é o padrão dos diálogos
+                # grandes do app (ficha do cliente/veículo). Com tight=True a coluna
+                # encolhe para o conteúdo e o diálogo abre espremido.
+                content=ft.Container(width=larg, height=alt, content=ft.Column(
+                    spacing=16, scroll=ft.ScrollMode.AUTO, controls=[
+                        ft.Row(spacing=12, wrap=True, controls=[
+                            f_ini, f_fim,
+                            ft.OutlinedButton("Este mês",
+                                              on_click=lambda e: periodo_rapido("mes")),
+                            ft.OutlinedButton("Mês passado",
+                                              on_click=lambda e: periodo_rapido("anterior")),
+                            ft.FilledButton("Calcular", icon=ft.Icons.REFRESH,
+                                            on_click=recalcular,
+                                            style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
+                        ]),
+                        erro_periodo,
+                        corpo,
+                    ])),
+                actions=[ft.TextButton("Fechar", on_click=lambda e: fechar_dialog())],
+            ))
+
+        def abrir_detalhe(f, ini, fim):
+            """Serviço a serviço que formou a comissão — a conferência do valor."""
+            itens = mod_func.comissao_detalhe(f["id"], data_inicio=ini, data_fim=fim)
+
+            def voltar(e):
+                # Um diálogo por vez: fecha ESTE antes de reabrir o resumo.
+                fechar_dialog()
+                abrir_comissoes()
+
+            def encurtar(texto, n=24):
+                """Nome comprido empurra as colunas de dinheiro para fora da tela."""
+                t = (texto or "").strip()
+                return t if len(t) <= n else t[:n - 1].rstrip() + "…"
+
+            if itens:
+                # column_spacing enxuto: o padrão do DataTable é 56 px entre colunas —
+                # com 8 colunas são ~390 px só de espaço vazio, e as colunas de dinheiro
+                # (o motivo da tela existir) ficavam cortadas fora da área visível.
+                tabela = ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
+                    heading_row_color=ft.Colors.GREY_50,
+                    column_spacing=18,
+                    columns=[
+                        ft.DataColumn(ft.Text("Data")),
+                        ft.DataColumn(ft.Text("Comanda")),
+                        ft.DataColumn(ft.Text("Cliente")),
+                        ft.DataColumn(ft.Text("Veículo")),
+                        ft.DataColumn(ft.Text("Serviço")),
+                        ft.DataColumn(ft.Text("Bruto")),
+                        ft.DataColumn(ft.Text("Base")),
+                        ft.DataColumn(ft.Text("Comissão")),
+                    ],
+                    rows=[ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(fmt_date(d["data"]))),
+                        ft.DataCell(ft.Text(f"#{d['id_ordem']}")),
+                        ft.DataCell(ft.Text(encurtar(d["cliente"]),
+                                            tooltip=d["cliente"] or "")),
+                        ft.DataCell(ft.Text(d["placa"] or "")),
+                        ft.DataCell(ft.Text(encurtar(d["servico"], 22),
+                                            tooltip=d["servico"] or "")),
+                        ft.DataCell(ft.Text(brl(d["bruto"]), color=ft.Colors.GREY_600)),
+                        ft.DataCell(ft.Text(brl(d["base"]))),
+                        ft.DataCell(ft.Text(brl(d["comissao"]), weight=ft.FontWeight.BOLD,
+                                            color=ft.Colors.GREEN_800)),
+                    ]) for d in itens],
+                )])
+            else:
+                tabela = ft.Container(
+                    padding=30, alignment=ft.Alignment.CENTER,
+                    content=ft.Text("Nenhum serviço no período.", color=ft.Colors.GREY_500))
+
+            larg, alt = medida_dialogo(linhas=len(itens), altura_fixa=250)
+
+            fechar_dialog()   # fecha o resumo ANTES de abrir o detalhe
+            abrir_dialog(ft.AlertDialog(
+                modal=True, title_padding=0,
+                title=cabecalho_dialog(f"Comissão — {f['nome']}", ft.Icons.RECEIPT_LONG),
+                content=ft.Container(width=larg, height=alt, content=ft.Column(
+                    spacing=14, scroll=ft.ScrollMode.AUTO, controls=[
+                        ft.Row(spacing=10, wrap=True, controls=[
+                            ft.Text(f"{iso_para_br(ini)} a {iso_para_br(fim)}",
+                                    size=12, color=ft.Colors.GREY_700),
+                            ft.Text("•", color=ft.Colors.GREY_400),
+                            ft.Text(f"{len(itens)} serviço(s)", size=12,
+                                    color=ft.Colors.GREY_700),
+                            ft.Text("•", color=ft.Colors.GREY_400),
+                            ft.Text(f"Total: {brl(f['comissao'])}", size=13,
+                                    weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_800),
+                        ]),
+                        tabela,
+                    ])),
+                actions=[ft.TextButton("Voltar", on_click=voltar)],
+            ))
+
+        botao_comissoes = ft.OutlinedButton(
+            "Comissões", icon=ft.Icons.PAYMENTS, on_click=lambda e: abrir_comissoes())
         botao_novo = ft.FilledButton(
             "Novo funcionário", icon=ft.Icons.ADD, on_click=lambda e: form_funcionario(),
             style=ft.ButtonStyle(bgcolor=COR_PRIMARIA))
@@ -3852,7 +4155,8 @@ def main(page: ft.Page):
         corpo_tabela.controls = [montar_linhas()]
 
         return ft.Column(expand=True, spacing=20, controls=[
-            cabecalho("Funcionários", "Equipe, funções e acesso ao sistema", acao=botao_novo),
+            cabecalho("Funcionários", "Equipe, funções e acesso ao sistema",
+                      acao=ft.Row(spacing=10, controls=[botao_comissoes, botao_novo])),
             ft.Row([campo_busca, dd_filtro_funcao, mostrar_inativos], spacing=16),
             card_tabela("Funcionários", corpo_tabela),
         ])

@@ -351,6 +351,230 @@ def produtividade(id_funcionario, data_inicio=None, data_fim=None):
         conexao.close()
 
 
+# ----------------------------------------------------------------
+# Comissão (fechamento do mês)
+# ----------------------------------------------------------------
+#
+# Quem executou cada serviço está em ordem_servico_item.id_funcionario ("Quem
+# lavou", escolhido na comanda). O percentual de cada um está em
+# funcionario.comissao_percentual. Estas funções cruzam os dois.
+#
+# Três decisões que valem para as duas consultas abaixo:
+#
+# 1. QUAIS COMANDAS CONTAM: status 'finalizado' ou 'entregue', por entrada_em —
+#    o MESMO critério de faturamento do dashboard.py e da ficha do cliente.
+#    É o que faz os números baterem entre as telas. Cancelada não paga comissão.
+#
+# 2. SOBRE QUAL VALOR: sobre o que a comanda cobrou de fato, não sobre a tabela
+#    de preços. Desconto e acréscimo vivem na COMANDA (não no item), então são
+#    rateados proporcionalmente entre os itens pelo 'fator' abaixo: numa comanda
+#    de R$ 100 fechada por R$ 90, o serviço de R$ 100 entra como R$ 90 na base.
+#    Sem isso, o dono daria 10% de desconto e pagaria comissão cheia.
+#
+# 3. SÓ SERVIÇO: itens de produto (venda de balcão na comanda) ficam de fora —
+#    comissão aqui é sobre mão de obra. Daí o 'i.id_servico IS NOT NULL'.
+#
+# O valor do item é quantidade * preco_aplicado (preco_aplicado é UNITÁRIO).
+# Hoje todo item nasce com quantidade = 1, então dá na mesma; a multiplicação
+# está aqui para continuar certo quando a venda de produto na comanda existir.
+
+# Comandas que pagam comissão + o fator de rateio do desconto/acréscimo.
+# NULLIF evita divisão por zero em comanda de valor_total 0 (aí o fator vira 1,
+# via COALESCE: sem base para ratear, não invento desconto).
+_CTE_COMANDAS = """
+    WITH comanda AS (
+        SELECT o.id_ordem,
+               COALESCE(
+                   (o.valor_total - COALESCE(o.desconto, 0) + COALESCE(o.acrescimo, 0))
+                   / NULLIF(o.valor_total, 0),
+                   1
+               ) AS fator
+        FROM ordem_servico o
+        WHERE o.status IN ('finalizado', 'entregue')
+          {filtro_datas}
+    )
+"""
+
+
+def _filtro_datas(data_inicio, data_fim, parametros, prefixo="o"):
+    """Monta o recorte de período sobre entrada_em (mesmo padrão de produtividade)."""
+    filtro = ""
+    if data_inicio:
+        filtro += f" AND {prefixo}.entrada_em >= %s"
+        parametros.append(data_inicio)
+    if data_fim:
+        filtro += f" AND {prefixo}.entrada_em < (%s::date + 1)"
+        parametros.append(data_fim)
+    return filtro
+
+
+def comissao_periodo(data_inicio=None, data_fim=None, id_funcionario=None):
+    """
+    Fechamento de comissão do período — quanto cada um tem a receber.
+
+    Datas em 'YYYY-MM-DD' (sobre a entrada da comanda). id_funcionario filtra um só.
+    Só aparece quem executou ao menos um serviço no período (quem não lavou não
+    entra na folha); inclui funcionário inativo que trabalhou antes de sair.
+
+    Retorna dict:
+      {'funcionarios': [ {id, nome, funcao, ativo, percentual, servicos,
+                          comandas, bruto, base, comissao}, ... ],
+       'total_bruto', 'total_base', 'total_comissao',
+       'sem_responsavel': {'servicos', 'valor'}}
+
+    'bruto' = preço cheio dos serviços; 'base' = já com desconto/acréscimo
+    rateado; 'comissao' = base * percentual / 100.
+
+    'sem_responsavel' são os serviços que ninguém marcou como executor: NÃO
+    entram na comissão de ninguém e por isso são devolvidos à parte — é o aviso
+    de que faltou preencher "Quem lavou" na comanda.
+    """
+    conexao = conectar()
+    if not conexao:
+        return {'funcionarios': [], 'total_bruto': 0, 'total_base': 0,
+                'total_comissao': 0, 'sem_responsavel': {'servicos': 0, 'valor': 0}}
+
+    try:
+        cursor = conexao.cursor()
+
+        parametros = []
+        cte = _CTE_COMANDAS.format(
+            filtro_datas=_filtro_datas(data_inicio, data_fim, parametros)
+        )
+
+        query = cte + """
+            SELECT f.id_funcionario,
+                   f.nome,
+                   f.funcao,
+                   f.ativo,
+                   COALESCE(f.comissao_percentual, 0)                AS percentual,
+                   COUNT(*)                                          AS servicos,
+                   COUNT(DISTINCT i.id_ordem)                        AS comandas,
+                   ROUND(SUM(i.quantidade * i.preco_aplicado), 2)           AS bruto,
+                   ROUND(SUM(i.quantidade * i.preco_aplicado * c.fator), 2) AS base,
+                   ROUND(SUM(i.quantidade * i.preco_aplicado * c.fator
+                             * COALESCE(f.comissao_percentual, 0) / 100), 2) AS comissao
+            FROM ordem_servico_item i
+            JOIN comanda c     ON c.id_ordem = i.id_ordem
+            JOIN funcionario f ON f.id_funcionario = i.id_funcionario
+            WHERE i.id_servico IS NOT NULL
+        """
+        if id_funcionario:
+            query += " AND f.id_funcionario = %s"
+            parametros.append(id_funcionario)
+
+        query += """
+            GROUP BY f.id_funcionario, f.nome, f.funcao, f.ativo, f.comissao_percentual
+            ORDER BY comissao DESC, f.nome;
+        """
+
+        cursor.execute(query, parametros)
+
+        funcionarios = [
+            {'id': l[0], 'nome': l[1], 'funcao': l[2], 'ativo': l[3],
+             'percentual': l[4], 'servicos': l[5], 'comandas': l[6],
+             'bruto': l[7] or 0, 'base': l[8] or 0, 'comissao': l[9] or 0}
+            for l in cursor.fetchall()
+        ]
+
+        # Serviços órfãos (sem "Quem lavou"): mesma janela, mas id_funcionario NULL.
+        parametros_orfaos = []
+        cte_orfaos = _CTE_COMANDAS.format(
+            filtro_datas=_filtro_datas(data_inicio, data_fim, parametros_orfaos)
+        )
+        cursor.execute(
+            cte_orfaos + """
+            SELECT COUNT(*),
+                   ROUND(COALESCE(SUM(i.quantidade * i.preco_aplicado * c.fator), 0), 2)
+            FROM ordem_servico_item i
+            JOIN comanda c ON c.id_ordem = i.id_ordem
+            WHERE i.id_servico IS NOT NULL
+              AND i.id_funcionario IS NULL;
+            """,
+            parametros_orfaos
+        )
+        orfaos = cursor.fetchone()
+
+        return {
+            'funcionarios': funcionarios,
+            'total_bruto': sum(f['bruto'] for f in funcionarios),
+            'total_base': sum(f['base'] for f in funcionarios),
+            'total_comissao': sum(f['comissao'] for f in funcionarios),
+            'sem_responsavel': {'servicos': orfaos[0], 'valor': orfaos[1]},
+        }
+
+    except Exception as erro:
+        print(f"Erro ao calcular comissão: {erro}")
+        return {'funcionarios': [], 'total_bruto': 0, 'total_base': 0,
+                'total_comissao': 0, 'sem_responsavel': {'servicos': 0, 'valor': 0}}
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
+def comissao_detalhe(id_funcionario, data_inicio=None, data_fim=None):
+    """
+    Serviço a serviço que formou a comissão do funcionário no período — é a
+    conferência de "de onde saiu esse valor" quando ele contesta o pagamento.
+
+    Retorna lista de dicts (mais recente primeiro):
+      {data, id_ordem, cliente, placa, servico, bruto, base, comissao}
+    """
+    conexao = conectar()
+    if not conexao:
+        return []
+
+    try:
+        cursor = conexao.cursor()
+
+        parametros = []
+        cte = _CTE_COMANDAS.format(
+            filtro_datas=_filtro_datas(data_inicio, data_fim, parametros)
+        )
+        parametros.append(id_funcionario)
+
+        cursor.execute(
+            cte + """
+            SELECT o.entrada_em,
+                   o.id_ordem,
+                   cli.nome,
+                   v.placa,
+                   s.nome,
+                   ROUND(i.quantidade * i.preco_aplicado, 2)           AS bruto,
+                   ROUND(i.quantidade * i.preco_aplicado * c.fator, 2) AS base,
+                   ROUND(i.quantidade * i.preco_aplicado * c.fator
+                         * COALESCE(f.comissao_percentual, 0) / 100, 2) AS comissao
+            FROM ordem_servico_item i
+            JOIN comanda c        ON c.id_ordem = i.id_ordem
+            JOIN ordem_servico o  ON o.id_ordem = i.id_ordem
+            JOIN funcionario f    ON f.id_funcionario = i.id_funcionario
+            JOIN cliente cli      ON cli.id_cliente = o.id_cliente
+            JOIN veiculo v        ON v.id_veiculo = o.id_veiculo
+            LEFT JOIN servico s   ON s.id_servico = i.id_servico
+            WHERE i.id_servico IS NOT NULL
+              AND i.id_funcionario = %s
+            ORDER BY o.entrada_em DESC, i.id_item;
+            """,
+            parametros
+        )
+
+        return [
+            {'data': l[0], 'id_ordem': l[1], 'cliente': l[2], 'placa': l[3],
+             'servico': l[4], 'bruto': l[5] or 0, 'base': l[6] or 0,
+             'comissao': l[7] or 0}
+            for l in cursor.fetchall()
+        ]
+
+    except Exception as erro:
+        print(f"Erro ao detalhar comissão: {erro}")
+        return []
+
+    finally:
+        cursor.close()
+        conexao.close()
+
+
 # ================================================================
 # TESTE RÁPIDO (rode este arquivo diretamente para testar)
 # ================================================================
