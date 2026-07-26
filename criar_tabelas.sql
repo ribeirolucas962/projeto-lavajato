@@ -398,6 +398,49 @@ CREATE TABLE IF NOT EXISTS fidelidade_movimento (
 
 CREATE INDEX IF NOT EXISTS idx_fidelidade_mov_cliente ON fidelidade_movimento(id_cliente);
 
+-- Regra de ACÚMULO: quantos pontos o cliente ganha por lavagem (comanda
+-- finalizada). Combinado com o dono em 2026-07-25: 1 ponto por lavação.
+-- É UMA LINHA SÓ (CHECK id = 1) e fica no banco, não no código, porque a
+-- promoção muda ("ponto em dobro no inverno") e trocar um número não pode
+-- exigir reempacotar o .exe — mesma decisão da taxa_pagamento no Caixa.
+CREATE TABLE IF NOT EXISTS fidelidade_regra (
+    id                 SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    pontos_por_lavagem SMALLINT NOT NULL DEFAULT 1 CHECK (pontos_por_lavagem >= 0),
+    ativo              BOOLEAN   NOT NULL DEFAULT TRUE,
+    atualizado_em      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO fidelidade_regra (id, pontos_por_lavagem) VALUES (1, 1)
+ON CONFLICT (id) DO NOTHING;
+
+-- Regra de TROCA: o que o cliente leva e por quantos pontos. Sem esta tabela,
+-- quanto vale um ponto era decisão de quem estava no balcão — o atendente
+-- digitava um número qualquer no resgate. A documentação do módulo pede
+-- "regras de troca (ex.: a cada 10 lavagens, 1 grátis)", que é o seed abaixo.
+CREATE TABLE IF NOT EXISTS fidelidade_recompensa (
+    id_recompensa      SERIAL PRIMARY KEY,
+    nome               VARCHAR(100) NOT NULL,
+    pontos_necessarios SMALLINT NOT NULL CHECK (pontos_necessarios > 0),
+    id_servico         INTEGER REFERENCES servico(id_servico),  -- opcional: serviço dado de brinde
+    ativo              BOOLEAN   NOT NULL DEFAULT TRUE,
+    criado_em          TIMESTAMP NOT NULL DEFAULT NOW(),
+    atualizado_em      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO fidelidade_recompensa (nome, pontos_necessarios)
+SELECT 'Lavagem grátis', 10
+WHERE NOT EXISTS (SELECT 1 FROM fidelidade_recompensa);
+
+-- Qual recompensa foi trocada neste resgate (NULL nos resgates avulsos e nos
+-- movimentos gravados antes de 25/07).
+ALTER TABLE fidelidade_movimento
+    ADD COLUMN IF NOT EXISTS id_recompensa INTEGER REFERENCES fidelidade_recompensa(id_recompensa);
+
+COMMENT ON TABLE  fidelidade_regra                          IS 'Pontos ganhos por lavagem (linha única) — editável pela tela de Fidelidade';
+COMMENT ON TABLE  fidelidade_recompensa                     IS 'Catálogo de trocas: o que o cliente leva e por quantos pontos';
+COMMENT ON COLUMN fidelidade_recompensa.id_servico          IS 'Serviço dado de brinde (opcional; NULL = benefício livre, ex. "brinde da loja")';
+COMMENT ON COLUMN fidelidade_movimento.id_recompensa        IS 'Recompensa trocada neste resgate (NULL = resgate avulso)';
+
 
 -- ================================================================
 -- MÓDULO 13 - PLANOS E ASSINATURAS

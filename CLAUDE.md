@@ -87,7 +87,7 @@ Risco alto, ganho baixo — o efeito prático é um horário 3h à frente em reg
 
 ---
 
-## Schema por módulo (23 tabelas)
+## Schema por módulo (25 tabelas)
 
 | # | Módulo | Tabelas | Arquivo .py | Status |
 |---|--------|---------|-------------|--------|
@@ -102,8 +102,8 @@ Risco alto, ganho baixo — o efeito prático é um horário 3h à frente em reg
 | 9 | Despesa | `despesa` | `despesa.py` | ✅ CRUD feito |
 | 10 | Caixa | `caixa`, `caixa_movimento`, `taxa_pagamento` | `caixa.py` | ✅ CRUD + revisão 22/07 + "Onde está o dinheiro" 23/07 |
 | 11 | Dashboard | *(sem tabela — só consultas)* | `dashboard.py` | ✅ consultas feitas |
-| 12 | Fidelidade | `fidelidade_saldo`, `fidelidade_movimento` | `fidelidade.py` | ✅ CRUD feito |
-| 13 | Planos e Assinaturas | `plano`, `plano_servico`, `assinatura`, `assinatura_uso` | `planos_assinaturas.py` | ✅ CRUD feito |
+| 12 | Fidelidade | `fidelidade_saldo`, `fidelidade_movimento`, `fidelidade_regra`, `fidelidade_recompensa` | `fidelidade.py` | ✅ CRUD + revisão 25/07 (regras + ponte) |
+| 13 | Planos e Assinaturas | `plano`, `plano_servico`, `assinatura`, `assinatura_uso` | `planos_assinaturas.py` | ✅ CRUD + revisão 25/07 (vigência) |
 
 A especificação detalhada de cada módulo (finalidade, dados, funcionalidades) está em
 `documentacao_modulos_lavajato.txt`. A ordem de implementação segue a numeração acima.
@@ -652,35 +652,122 @@ módulo 7), 3 unidades de cera passarão a ser cobradas como 1. As funções de 
 usam `quantidade * preco_aplicado`, então ficam certas quando o `_recalcular_total` for
 corrigido.
 
+### Módulos 12 (Fidelidade) e 13 (Planos e Assinaturas) — revisão de 2026-07-25
+21 problemas achados; os graves corrigidos e testados contra o banco (**68 checks, 0
+falhas**; dados de teste apagados no fim). Os dois módulos tinham o mesmo vício de fundo:
+**a regra de negócio não existia em lugar nenhum** — o sistema guardava os dados e deixava
+a decisão para quem estava no balcão.
+
+**Módulo 13 — os dois furos de dinheiro:**
+1. ✅ **Assinatura vencida liberava serviço para sempre.** `registrar_uso()` conferia
+   `ativo` e **nunca olhava `data_vencimento`** — o cliente que parou de pagar em maio
+   seguia com as 4 lavagens/mês. `data_vencimento`/`data_renovacao` eram preenchidas,
+   exibidas na tela e **não decidiam nada** (4ª e 5ª colunas órfãs do projeto, depois de
+   `preco_venda`, `id_despesa` e `comissao_percentual`). Agora **três** coisas definem a
+   vigência (bloco no topo do módulo): `ativo`, `data_inicio <= hoje` e
+   `data_vencimento >= hoje` (NULL = sem prazo). Novas `situacao_assinatura()` (dict com
+   `situacao`/`dias_para_vencer`/`motivo` pronto para a tela), `assinaturas_a_vencer()`
+   (o *"alertar sobre vencimento"* que a documentação pedia e nunca existiu) e a coluna
+   `situacao` no fim de `buscar_assinaturas()` — resolvida **no banco** (`CURRENT_DATE`),
+   para a lista marcar "Vencida" sem uma consulta por linha.
+   ⚠️ Achado ao testar: a **assinatura #1 do banco venceu em 24/07** e aparecia verde
+   como "Ativa" — o bug estava valendo nos dados reais.
+2. ✅ **Dava para assinar o mesmo plano duas vezes.** Sem UNIQUE no banco e sem checagem:
+   dois cliques = duas assinaturas ativas = **cota dobrada em silêncio**. `assinar()` agora
+   recusa duplicata do MESMO plano (via `assinaturas_vigentes_do_cliente()`) e **permite**
+   planos diferentes (lavagem + polimento é legítimo), com aviso na tela.
+3. ✅ `registrar_uso()` devolve **dict** (`ok`/`motivo`/`usado`/`cota`/`restante`/`situacao`)
+   em vez de `id`/None mudo — "não foi possível" não serve com o cliente esperando uma
+   lavagem de graça no balcão. Podia mudar a assinatura porque **ninguém a chamava ainda**.
+4. ✅ Nome de plano duplicado (`plano.nome` é UNIQUE) avisa com jeitinho via
+   `buscar_plano_por_nome()`; mensalidade negativa/não numérica barrada **antes** de abrir
+   conexão (`_valor_valido()`, aceita vírgula decimal); `editar_plano()` migrado de COALESCE
+   para o sentinela **MANTER** (7º módulo).
+5. ✅ **N+1 na tela:** `buscar_plano_por_id()` (que faz 2 queries) era chamada dentro do
+   laço só para contar serviços — 10 planos = 21 conexões. Nova `resumo_servicos_planos()`
+   numa consulta; de quebra a coluna mostra "2 serviço(s) · 6 usos/mês".
+6. ✅ **"Sucesso falso" ao salvar serviços do plano** (o mesmo bug nº 3 do módulo 3, aqui
+   pior: nem mensagem havia). Agora acumula falhas, **nomeia** o serviço que não gravou e
+   só grava o que mudou.
+7. ✅ **Datas em `AAAA-MM-DD`** no formulário, enquanto o resto do sistema usa dd/mm/aaaa
+   com máscara — o operador digitava 25/07/2026 e levava "data inválida". Corrigido, mais
+   validação de vencimento anterior ao início.
+
+**Módulo 12 — o programa de pontos não tinha regra nenhuma:**
+8. ✅ **Quanto vale um ponto** era o default `pontos=1` de um parâmetro Python, e **quantos
+   pontos valem o quê** era o atendente digitando um número livre no resgate. Duas tabelas
+   novas, editáveis pela tela (mesma receita da `taxa_pagamento` do Caixa, porque promoção
+   muda e trocar um número não pode exigir reempacotar o `.exe`):
+   - **`fidelidade_regra`** — linha única (`CHECK id = 1`), `pontos_por_lavagem`.
+     **Combinado com o Lucas em 25/07: 1 ponto por lavação.**
+   - **`fidelidade_recompensa`** — catálogo de trocas (o que leva, por quantos pontos,
+     serviço opcional). Seed "Lavagem grátis / 10 pontos" = o exemplo da documentação
+     (*"a cada 10 lavagens, 1 grátis"*). Coluna `fidelidade_movimento.id_recompensa` nova.
+   Backend: `regra_pontos()`, `salvar_regra()`, `recompensas()`, `salvar_recompensa()`,
+   `definir_status_recompensa()` e **`resgatar_recompensa()`** (debita o preço do catálogo,
+   devolve dict com "faltam N pontos"). Tela: botão **"Regras de pontos"** no cabeçalho e o
+   resgate por dropdown do catálogo ("Outro (avulso)" fica como escape).
+9. ✅ **Ponte Comanda→Fidelidade ligada** (era a nº 1 da fila): finalizar/entregar a comanda
+   credita o ponto e mostra o novo saldo. `acumular_por_comanda()` agora **valida o status**
+   (só `finalizado`/`entregue` — o mesmo critério do dashboard; cancelada não pontua) e usa a
+   regra do banco. Continua idempotente, então **reabrir a comanda para correção e finalizar
+   de novo não dá ponto em dobro**. `mod_fid` subiu para os imports do topo do `app.py`.
+10. ✅ **N+1 na tela:** `saldo_pontos()` dentro do laço de clientes, com a lista remontada a
+    cada tecla da busca — 300 clientes = **301 conexões por tecla**. Nova `saldos_pontos()`.
+11. ✅ Resgate passa a guardar **em qual comanda** o benefício foi usado (`id_ordem` só era
+    preenchido no acúmulo) e o extrato desempata por `id_movimento` (dois lançamentos no
+    mesmo instante saíam em ordem indefinida).
+
+⚠️ **Pendente de conferência na tela** (backend testado, `app.py` compila, telas não vistas
+rodando): **Fidelidade** → "Regras de pontos" (trocar pontos/lavagem, adicionar recompensa) e
+resgate pelo catálogo com saldo insuficiente ("Faltam N pontos"); **Planos → Assinaturas** →
+a assinatura #1 deve aparecer com badge **vermelho "Vencida"** e o resumo com a faixa
+vermelha + botão "Cobrar renovação"; tentar assinar o mesmo plano de novo deve dar a faixa
+vermelha antes mesmo de salvar; **Comandas** → finalizar uma comanda deve mostrar o toast
+"+1 ponto de fidelidade".
+
+**Achados NÃO corrigidos** (por ordem de retorno): **mensalidade nunca vira dinheiro** — a
+"receita recorrente" que é a *finalidade* do módulo 13 não existe em lugar nenhum: não há
+cobrança, não entra no caixa, não gera despesa, e ninguém sabe quem pagou o mês (é a
+próxima ponte natural, Assinatura→Caixa/Despesa); **sem estorno de pontos** (digitou 100 em
+vez de 10 → só dá para "resgatar" 90, que mente no extrato — mesma família do estorno do
+caixa, e exigiria mexer no `CHECK (tipo IN ('acumulo','resgate'))`); `saldo_servicos_mes()`
+não filtra assinatura cancelada (a tela agora mostra a situação por cima, então o risco caiu);
+`uso_no_mes()` é **função órfã** (duplicada dentro de `registrar_uso`); `registrar_uso()` tem
+TOCTOU (checa a cota e insere sem lock, mesma família do `abrir_caixa`); e a tela de
+Fidelidade lista **todos** os clientes, sem filtro "só quem tem pontos" nem ordenação por
+saldo — para achar quem pode resgatar, rola a lista inteira.
+
 ### As "pontes que faltam" (levantadas em 2026-07-24)
 Diagnóstico pedido pelo Lucas ("tem mais algo que podemos melhorar?"). O projeto tem um
 padrão de falha próprio, que já apareceu quatro vezes: **o dado existe no banco, a função
 existe no módulo, e ninguém liga uma coisa na outra** — daí a tela mostra um número que
-não é verdade. Já resolvidas: Comanda→Caixa (16/07), Despesa→Caixa (22/07), comissão (24/07).
-Ainda abertas, por ordem de retorno:
-1. **Comanda→Fidelidade.** `acumular_pontos()` só é chamada da tela de Fidelidade
-   (`app.py`, botão manual): o ponto só entra se o atendente lembrar de abrir a tela e
-   digitar. Na prática o programa de pontos **não funciona** — o cliente lava 10 vezes e
-   continua zerado.
-2. **Comanda→Assinatura.** `planos_assinaturas.registrar_uso()` está pronta e testada e
+não é verdade. Já resolvidas: Comanda→Caixa (16/07), Despesa→Caixa (22/07), comissão (24/07)
+e **Comanda→Fidelidade (25/07)**. Ainda abertas, por ordem de retorno:
+1. **Comanda→Assinatura.** `planos_assinaturas.registrar_uso()` está pronta e testada e
    **nenhuma linha do `app.py` chama**. O cliente do plano de 4 lavagens/mês aparece com 4
    disponíveis para sempre **e ainda é cobrado o valor cheio na comanda** — erra nos dois
    sentidos (cobra quem já pagou, não controla quem estoura o plano). É a que mexe em
-   dinheiro de verdade.
+   dinheiro de verdade. A revisão de 25/07 deixou o backend **pronto para plugar**:
+   `registrar_uso()` já devolve motivo explicado e `assinaturas_vigentes_do_cliente()`
+   responde "este cliente tem plano?" numa consulta.
+2. **Assinatura→Caixa/Despesa** (achada na revisão de 25/07): a **mensalidade nunca vira
+   dinheiro** — não há cobrança, não entra no caixa e ninguém sabe quem pagou o mês.
 3. **Comanda→Estoque** (a "baixa automática" já listada no módulo 7): saída 100% manual,
    então o saldo é ficção.
 
-**O bug do COALESCE ainda vive em 4 módulos** — `despesa.py`, `funcionario.py`,
-`ordem_servico.py` e `planos_assinaturas.py` (foi corrigido em cliente, veículo,
-agendamento, serviço, produto e fornecedor). O mais grave é `despesa.py`:
+**O bug do COALESCE ainda vive em 3 módulos** — `despesa.py`, `funcionario.py` e
+`ordem_servico.py` (foi corrigido em cliente, veículo, agendamento, serviço, produto,
+fornecedor e **plano**). O mais grave é `despesa.py`:
 `data_pagamento = COALESCE(%s, data_pagamento)` torna **impossível estornar uma despesa
 marcada como paga por engano** — e desde 22/07 marcar como paga **lança saída no caixa**,
 então o dinheiro sai e não há botão de volta. Mesma coisa em
 `ordem_servico.salvar_financeiro()` (não dá para desfazer um pagamento registrado errado).
 
-**Módulos nunca revisados:** 5 (Ordem de Serviço), 9, 12 e 13. Os quatro revisados renderam
-4, 7, 5 e 7 problemas cada; o **módulo 5 é o que mais roda no balcão** e por onde passa
-todo o dinheiro.
+**Módulos nunca revisados:** 5 (Ordem de Serviço) e 9 (Despesa). Os seis revisados renderam
+4, 7, 5, 7 e 21 problemas; o **módulo 5 é o que mais roda no balcão** e por onde passa todo
+o dinheiro — e já tem uma bomba-relógio conhecida (`_recalcular_total()` ignorando a
+`quantidade`, ver módulo 6).
 
 ### Dívidas estruturais do projeto (levantadas em 2026-07-21, nada feito)
 Diagnóstico pedido pelo Lucas ("esse sistema foi bem estruturado certo?"). Resumo: **a dívida

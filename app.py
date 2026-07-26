@@ -58,6 +58,7 @@ import agendamento as mod_ag
 import estoque as mod_estoque
 import fornecedores as mod_forn
 import planos_assinaturas as mod_planos
+import fidelidade as mod_fid       # ponte Comanda->Fidelidade: usada também na tela de Comandas
 import caixa as mod_caixa
 import dashboard as mod_dash
 from conexao import conectar   # usado no login para distinguir "banco fora" de "senha errada"
@@ -2083,10 +2084,32 @@ def main(page: ft.Page):
             ])
 
             # Mudança de status
+            def mudar_status(novo):
+                """
+                Troca o status e, ao FINALIZAR/ENTREGAR, credita o ponto de fidelidade.
+
+                É a ponte Comanda->Fidelidade: antes o ponto só entrava se o atendente
+                lembrasse de abrir a tela de Fidelidade e digitar, ou seja, o programa
+                de pontos não funcionava — o cliente lavava 10 vezes e continuava zerado.
+                acumular_por_comanda() é idempotente (não credita duas vezes pela mesma
+                comanda) e respeita a regra do banco, então reabrir a comanda para
+                correção e finalizar de novo NÃO dá ponto em dobro.
+                """
+                if not mod_os.alterar_status(id_ordem, novo):
+                    falha("Não foi possível alterar o status.")
+                    return
+                if novo in ('finalizado', 'entregue'):
+                    saldo = mod_fid.acumular_por_comanda(id_ordem)
+                    if saldo is not None:
+                        pontos_regra, _ativa = mod_fid.regra_pontos()
+                        sucesso(f"+{pontos_regra} ponto(s) de fidelidade — "
+                                f"o cliente tem {saldo} agora.")
+                refrescar()
+
             def botao_status(rotulo, novo, cor):
                 return ft.OutlinedButton(
                     rotulo, disabled=finalizada or status == novo,
-                    on_click=lambda e: (mod_os.alterar_status(id_ordem, novo), refrescar()),
+                    on_click=lambda e: mudar_status(novo),
                     style=ft.ButtonStyle(color=cor))
             # Reabrir comanda travada (entregue/cancelada) para CORREÇÃO.
             # Entregue volta a 'finalizado' (continua valendo no faturamento, só
@@ -4537,10 +4560,13 @@ def main(page: ft.Page):
                         padding=30, alignment=ft.Alignment.CENTER,
                         content=ft.Text("Nenhum plano cadastrado. Clique em \"Novo plano\".",
                                         color=ft.Colors.GREY_500))
+                # Contagem de serviços de TODOS os planos numa consulta só. Antes
+                # chamava buscar_plano_por_id() dentro do laço — e ela faz 2 queries,
+                # então 10 planos custavam 21 conexões ao banco só para montar a lista.
+                resumo = mod_planos.resumo_servicos_planos()
                 linhas = []
                 for (idp, nome, valor, ativo) in planos:
-                    dados = mod_planos.buscar_plano_por_id(idp)
-                    n_serv = len(dados["servicos"]) if dados else 0
+                    n_serv, usos_mes = resumo.get(idp, (0, 0))
                     badge = ft.Container(
                         padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
                         bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
@@ -4558,7 +4584,10 @@ def main(page: ft.Page):
                         ft.DataCell(ft.Text(str(idp))),
                         ft.DataCell(ft.Text(nome or "")),
                         ft.DataCell(ft.Text(f"{brl(valor)}/mês")),
-                        ft.DataCell(ft.Text(f"{n_serv} serviço(s)")),
+                        # Mostra o que o plano ENTREGA por mês, não só quantos itens
+                        # tem: "2 serviço(s) · 6 usos/mês" diz muito mais que "2".
+                        ft.DataCell(ft.Text(f"{n_serv} serviço(s)" +
+                                            (f" · {usos_mes} usos/mês" if usos_mes else ""))),
                         ft.DataCell(badge),
                         ft.DataCell(ft.Row(spacing=0, controls=[
                             ft.IconButton(ft.Icons.LIST_ALT, icon_color=COR_ACENTO,
@@ -4598,6 +4627,21 @@ def main(page: ft.Page):
                     except ValueError:
                         erro.value = "Mensalidade deve ser um número (ex.: 99,90)."
                         page.update(); return
+                    if valor < 0:
+                        erro.value = "A mensalidade não pode ser negativa."
+                        page.update(); return
+
+                    # 'plano.nome' é UNIQUE: sem esta checagem o INSERT estourava no
+                    # banco e a tela dizia só "não foi possível salvar". Traz inativos
+                    # também — plano desativado com o mesmo nome continua bloqueando.
+                    existente = mod_planos.buscar_plano_por_nome(f_nome.value.strip())
+                    if existente and not (editando and existente[0] == plano[0]):
+                        erro.value = (f"Já existe o plano \"{existente[1]}\" "
+                                      f"({brl(existente[2])}/mês)"
+                                      + ("" if existente[3] else
+                                         " — está inativo, reative-o em vez de criar outro."))
+                        page.update(); return
+
                     if editando:
                         ok = mod_planos.editar_plano(plano[0], nome=f_nome.value.strip(),
                                                      valor_mensalidade=valor)
@@ -4648,14 +4692,31 @@ def main(page: ft.Page):
                             erro.value = "Quantidades devem ser números inteiros maiores que zero."
                             page.update(); return
                         novos[sid] = int(txt)
+                    # Acumula as falhas e NOMEIA quem não gravou. Antes o retorno das
+                    # duas funções era ignorado: o diálogo fechava igual, tendo gravado
+                    # ou não, e ninguém dizia nada (mesmo "sucesso falso" do módulo 3).
+                    nomes = {s[0]: s[1] for s in servicos}
+                    falhou = []
+                    alterados = 0
                     for sid, q in novos.items():
                         if q is None:
                             if sid in cotas_atuais:
-                                mod_planos.remover_servico_plano(id_plano, sid)
-                        else:
-                            mod_planos.definir_servico_plano(id_plano, sid, q)
+                                if mod_planos.remover_servico_plano(id_plano, sid):
+                                    alterados += 1
+                                else:
+                                    falhou.append(nomes.get(sid, f"#{sid}"))
+                        elif cotas_atuais.get(sid) != q:
+                            if mod_planos.definir_servico_plano(id_plano, sid, q):
+                                alterados += 1
+                            else:
+                                falhou.append(nomes.get(sid, f"#{sid}"))
+                    if falhou:
+                        erro.value = ("Não foi possível salvar: " + ", ".join(falhou))
+                        page.update(); return
                     fechar_dialog()
                     atualizar()
+                    sucesso(f"{alterados} serviço(s) atualizado(s) no plano."
+                            if alterados else "Nenhuma alteração.")
 
                 abrir_dialog(ft.AlertDialog(
                     modal=True, title_padding=0,
@@ -4691,14 +4752,28 @@ def main(page: ft.Page):
                         content=ft.Text("Nenhuma assinatura. Clique em \"Nova assinatura\".",
                                         color=ft.Colors.GREY_500))
                 linhas = []
-                # Tupla = SELECT de planos_assinaturas.buscar_assinaturas() (cli/plano
-                # já vêm como nomes via JOIN; 'renov' = renovação automática).
-                for (ida, cli, plano, inicio, venc, renov, ativo) in assinaturas:
+                # Tupla = SELECT de planos_assinaturas.buscar_assinaturas(); cli/plano
+                # já vêm como nomes via JOIN. 'renov' é a DATA de renovação (DATE),
+                # não um "renova automático" — e 'situacao'/'dias' vêm calculados no
+                # banco (índices 7 e 8, acrescentados no fim do SELECT).
+                for (ida, cli, plano, inicio, venc, renov, ativo,
+                     situacao, dias) in assinaturas:
+                    # "Ativa" não bastava: assinatura VENCIDA continuava com ativo=TRUE
+                    # e aparecia verde, enquanto o cliente já tinha parado de pagar.
+                    cor_bg, cor_fg, rotulo = {
+                        'vigente':      (ft.Colors.GREEN_100, ft.Colors.GREEN_900, "Ativa"),
+                        'vencida':      (ft.Colors.RED_100,   ft.Colors.RED_900,   "Vencida"),
+                        'nao_iniciada': (ft.Colors.BLUE_100,  ft.Colors.BLUE_900,  "A iniciar"),
+                        'cancelada':    (ft.Colors.GREY_300,  ft.Colors.GREY_700,  "Cancelada"),
+                    }.get(situacao, (ft.Colors.GREY_300, ft.Colors.GREY_700, situacao))
+                    # Vence dentro de 7 dias: âmbar, para dar tempo de cobrar a renovação.
+                    if situacao == 'vigente' and dias is not None and dias <= 7:
+                        cor_bg, cor_fg = ft.Colors.AMBER_100, ft.Colors.AMBER_900
+                        rotulo = "Vence hoje" if dias == 0 else f"Vence em {dias}d"
                     badge = ft.Container(
                         padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=20,
-                        bgcolor=ft.Colors.GREEN_100 if ativo else ft.Colors.GREY_300,
-                        content=ft.Text("Ativa" if ativo else "Cancelada", size=11,
-                                        color=ft.Colors.GREEN_900 if ativo else ft.Colors.GREY_700))
+                        bgcolor=cor_bg,
+                        content=ft.Text(rotulo, size=11, color=cor_fg))
                     botoes = [ft.IconButton(ft.Icons.RECEIPT, icon_color=COR_ACENTO,
                                             tooltip="Ver resumo do plano",
                                             on_click=lambda e, i=ida: ver_resumo(i))]
@@ -4728,32 +4803,81 @@ def main(page: ft.Page):
                 page.update()
 
             def ver_resumo(id_assinatura):
-                # Acha a assinatura na lista já carregada (só para exibir cliente/plano).
-                ass = next((a for a in mod_planos.buscar_assinaturas(apenas_ativas=False)
-                            if a[0] == id_assinatura), None)
-                # Descobrir o id do plano dessa assinatura via buscar_plano por nome é frágil;
-                # usamos saldo_servicos_mes para montar o resumo real do contratado
-                # (cada serviço com cota do mês, quanto já foi usado e quanto resta).
+                # situacao_assinatura() traz cliente, plano, datas E se vale hoje —
+                # uma consulta só, no lugar de varrer a lista inteira de novo.
+                sit = mod_planos.situacao_assinatura(id_assinatura)
+                if not sit:
+                    aviso("Erro", "Assinatura não encontrada."); return
+
+                # Usa saldo_servicos_mes para o resumo real do contratado (cada
+                # serviço com cota do mês, quanto já foi usado e quanto resta).
                 saldo = mod_planos.saldo_servicos_mes(id_assinatura)
                 if saldo:
-                    itens = [ft.Text(f"• {nome} — {int(cota)}x/mês "
-                                     f"(usado {int(usado)}, restam {int(rest)})", size=13)
-                             for (_id, nome, cota, usado, rest) in saldo]
+                    itens = []
+                    for (_id, nome_s, cota, usado, rest) in saldo:
+                        esgotado = int(rest) <= 0
+                        itens.append(ft.Row(spacing=8, controls=[
+                            ft.Icon(ft.Icons.CHECK_CIRCLE if not esgotado else ft.Icons.REMOVE_CIRCLE,
+                                    size=15,
+                                    color=ft.Colors.GREEN_600 if not esgotado else ft.Colors.GREY_400),
+                            ft.Text(f"{nome_s} — {int(cota)}x/mês "
+                                    f"(usado {int(usado)}, restam {int(rest)})", size=13,
+                                    color=None if not esgotado else ft.Colors.GREY_500),
+                        ]))
                 else:
                     itens = [ft.Text("Plano sem serviços inclusos.", size=13, italic=True,
                                      color=ft.Colors.GREY_500)]
+
+                # Faixa de situação: é a resposta a "posso dar essa lavagem de graça?".
+                # Sem ela, assinatura vencida parecia igual a uma em dia.
+                cores = {
+                    'vigente':      (ft.Colors.GREEN_50, ft.Colors.GREEN_900, ft.Icons.VERIFIED),
+                    'vencida':      (ft.Colors.RED_50,   ft.Colors.RED_900,   ft.Icons.ERROR_OUTLINE),
+                    'nao_iniciada': (ft.Colors.BLUE_50,  ft.Colors.BLUE_900,  ft.Icons.SCHEDULE),
+                    'cancelada':    (ft.Colors.GREY_200, ft.Colors.GREY_800,  ft.Icons.BLOCK),
+                }
+                bg, fg, icone = cores.get(sit['situacao'],
+                                          (ft.Colors.GREY_200, ft.Colors.GREY_800, ft.Icons.INFO))
+                if sit['situacao'] == 'vigente' and sit['dias_para_vencer'] is not None \
+                        and sit['dias_para_vencer'] <= 7:
+                    bg, fg, icone = ft.Colors.AMBER_50, ft.Colors.AMBER_900, ft.Icons.SCHEDULE
+                faixa = ft.Container(
+                    bgcolor=bg, border_radius=8, padding=12,
+                    content=ft.Row(spacing=10, controls=[
+                        ft.Icon(icone, color=fg, size=20),
+                        ft.Text(sit['motivo'], color=fg, size=13, weight=ft.FontWeight.BOLD,
+                                expand=True),
+                    ]))
+
+                linha_datas = ft.Text(
+                    f"Início: {fmt_date(sit['data_inicio'])}   ·   "
+                    f"Vencimento: {fmt_date(sit['data_vencimento'])}   ·   "
+                    f"Renovação: {fmt_date(sit['data_renovacao'])}",
+                    size=12, color=ft.Colors.GREY_700)
+
+                botoes = [ft.TextButton("Fechar", on_click=lambda e: fechar_dialog())]
+                if sit['situacao'] == 'vencida':
+                    # Cobrar a renovação é a ação óbvia daqui — o WhatsApp já existe.
+                    botoes.insert(0, ft.FilledButton(
+                        "Cobrar renovação", icon=ft.Icons.CHAT,
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_600),
+                        on_click=lambda e: (fechar_dialog(),
+                                            menu_whatsapp(sit['id_cliente'], sit['cliente'],
+                                                          sit['telefone'], sugerido="cobranca"))))
+
                 abrir_dialog(ft.AlertDialog(
                     modal=True, title_padding=0,
-                    title=cabecalho_dialog(
-                        f"Assinatura — {ass[1] if ass else ''}", ft.Icons.RECEIPT),
-                    content=ft.Container(width=440, content=ft.Column(
-                        tight=True, spacing=8, scroll=ft.ScrollMode.AUTO, controls=[
-                            ft.Text(f"Plano: {ass[2] if ass else ''}", weight=ft.FontWeight.BOLD),
+                    title=cabecalho_dialog(f"Assinatura — {sit['cliente']}", ft.Icons.RECEIPT),
+                    content=ft.Container(width=480, content=ft.Column(
+                        tight=True, spacing=10, scroll=ft.ScrollMode.AUTO, controls=[
+                            faixa,
+                            ft.Text(f"Plano: {sit['plano']}", weight=ft.FontWeight.BOLD),
+                            linha_datas,
                             ft.Divider(),
                             ft.Text("Serviços inclusos (saldo do mês):", size=12,
                                     color=ft.Colors.GREY_700),
                             *itens])),
-                    actions=[ft.TextButton("Fechar", on_click=lambda e: fechar_dialog())]))
+                    actions=botoes))
 
             def form_assinatura():
                 clientes = mod_cli.buscar_clientes()
@@ -4766,11 +4890,53 @@ def main(page: ft.Page):
                     options=[ft.dropdown.Option(key=str(p[0]), text=f"{p[1]} ({brl(p[2])}/mês)")
                              for p in planos])
                 resumo = ft.Container()
-                hoje = datetime.now().strftime("%Y-%m-%d")
-                f_inicio = ft.TextField(label="Início (AAAA-MM-DD)", value=hoje, width=200)
-                f_venc = ft.TextField(label="Vencimento (AAAA-MM-DD)", width=200,
-                                      hint_text="opcional")
+                # Datas em dd/mm/aaaa com máscara, como no RESTO do sistema. Estavam
+                # em AAAA-MM-DD: o operador digitava 25/07/2026 e levava "data inválida".
+                f_inicio = ft.TextField(label="Início *", width=200,
+                                        value=datetime.now().strftime("%d/%m/%Y"),
+                                        hint_text="dd/mm/aaaa")
+                f_venc = ft.TextField(label="Vencimento", width=200, hint_text="dd/mm/aaaa")
                 erro = ft.Text("", color=ft.Colors.RED_400, size=12)
+                faixa_aviso = ft.Container(visible=False)
+
+                def mascarar(campo):
+                    def _on_change(e):
+                        campo.value = val.mascara_data(campo.value)
+                        page.update()
+                    return _on_change
+                f_inicio.on_change = mascarar(f_inicio)
+                f_venc.on_change = mascarar(f_venc)
+
+                def checar_existente():
+                    """
+                    Avisa se o cliente JÁ tem plano vigente. Assinar o MESMO plano é
+                    engano (o backend recusa); outro plano é legítimo, então aqui só
+                    informamos — quem decide é quem está atendendo.
+                    """
+                    k_cli, k_plano = dd_key(dd_cli), dd_key(dd_plano)
+                    faixa_aviso.visible = False
+                    if not k_cli:
+                        return
+                    vigentes = mod_planos.assinaturas_vigentes_do_cliente(int(k_cli))
+                    if not vigentes:
+                        return
+                    mesmo = [v for v in vigentes if k_plano and v[1] == int(k_plano)]
+                    if mesmo:
+                        texto = (f"Este cliente JÁ tem o plano \"{mesmo[0][2]}\" vigente "
+                                 f"(assinatura #{mesmo[0][0]}). Assinar de novo dobraria "
+                                 f"a cota — cancele a antiga antes.")
+                        bg, fg, icone = ft.Colors.RED_50, ft.Colors.RED_900, ft.Icons.ERROR_OUTLINE
+                    else:
+                        nomes = ", ".join(f"\"{v[2]}\"" for v in vigentes)
+                        texto = f"Cliente já assina: {nomes}. Pode assinar outro plano normalmente."
+                        bg, fg, icone = ft.Colors.AMBER_50, ft.Colors.AMBER_900, ft.Icons.INFO_OUTLINE
+                    faixa_aviso.bgcolor = bg
+                    faixa_aviso.border_radius = 8
+                    faixa_aviso.padding = 12
+                    faixa_aviso.visible = True
+                    faixa_aviso.content = ft.Row(spacing=10, controls=[
+                        ft.Icon(icone, color=fg, size=18),
+                        ft.Text(texto, color=fg, size=12, expand=True)])
 
                 def on_plano(e):
                     # Ao escolher o plano, mostra o resumo (valor + serviços inclusos)
@@ -4778,8 +4944,10 @@ def main(page: ft.Page):
                     k_plano = dd_key(dd_plano)
                     resumo.content = (resumo_plano_widget(int(k_plano))
                                       if k_plano else None)
-                    resumo.update()
+                    checar_existente()
+                    page.update()
                 dd_plano.on_change = on_plano
+                dd_cli.on_change = lambda e: (checar_existente(), page.update())
 
                 def salvar(e):
                     k_cli = dd_key(dd_cli)
@@ -4788,31 +4956,42 @@ def main(page: ft.Page):
                         erro.value = "Selecione o cliente."; page.update(); return
                     if not k_plano:
                         erro.value = "Selecione o plano."; page.update(); return
-                    for campo, rotulo in ((f_inicio, "Início"), (f_venc, "Vencimento")):
+
+                    # dd/mm/aaaa na tela -> AAAA-MM-DD para o banco.
+                    datas = {}
+                    for campo, rotulo, chave in ((f_inicio, "Início", 'inicio'),
+                                                 (f_venc, "Vencimento", 'venc')):
                         txt = (campo.value or "").strip()
-                        if txt:
-                            try:
-                                datetime.strptime(txt, "%Y-%m-%d")
-                            except ValueError:
-                                erro.value = f"{rotulo}: data inválida (AAAA-MM-DD)."
-                                page.update(); return
+                        if not txt:
+                            datas[chave] = None
+                            continue
+                        try:
+                            datas[chave] = datetime.strptime(txt, "%d/%m/%Y").strftime("%Y-%m-%d")
+                        except ValueError:
+                            erro.value = f"{rotulo}: data inválida (use dd/mm/aaaa)."
+                            page.update(); return
+                    if datas['inicio'] and datas['venc'] and datas['venc'] < datas['inicio']:
+                        erro.value = "O vencimento não pode ser antes do início."
+                        page.update(); return
+
                     novo = mod_planos.assinar(
                         int(k_cli), int(k_plano),
-                        data_inicio=(f_inicio.value or "").strip() or None,
-                        data_vencimento=(f_venc.value or "").strip() or None)
+                        data_inicio=datas['inicio'], data_vencimento=datas['venc'])
+                    if not novo:
+                        # A causa mais provável é a duplicata que o backend agora recusa.
+                        erro.value = ("Não foi possível criar a assinatura. Verifique se o "
+                                      "cliente já não tem este mesmo plano vigente.")
+                        page.update(); return
                     fechar_dialog()
-                    if novo:
-                        atualizar()
-                        sucesso("Assinatura criada.")
-                    else:
-                        aviso("Erro", "Não foi possível criar a assinatura.")
+                    atualizar()
+                    sucesso("Assinatura criada.")
 
                 abrir_dialog(ft.AlertDialog(
                     modal=True, title_padding=0,
                     title=cabecalho_dialog("Nova assinatura", ft.Icons.CARD_MEMBERSHIP),
                     content=ft.Container(width=480, content=ft.Column(
                         tight=True, spacing=12, scroll=ft.ScrollMode.AUTO, controls=[
-                            dd_cli, dd_plano,
+                            dd_cli, dd_plano, faixa_aviso,
                             ft.Text("Resumo do plano (o cliente fica ciente):", size=12,
                                     color=ft.Colors.GREY_600),
                             resumo,
@@ -5684,8 +5863,8 @@ def main(page: ft.Page):
     # ============================================================
     # PÁGINA: FIDELIDADE (pontos por cliente: acúmulo/resgate + extrato)
     # ============================================================
-    # Import local (igual ao de despesa acima): intencional, não é erro.
-    import fidelidade as mod_fid
+    # (mod_fid subiu para os imports do topo: a tela de Comandas também usa,
+    #  na ponte que credita o ponto ao finalizar a comanda.)
 
     def pagina_fidelidade():
         campo_busca = ft.TextField(
@@ -5700,12 +5879,16 @@ def main(page: ft.Page):
                 return ft.Container(
                     padding=30, alignment=ft.Alignment.CENTER,
                     content=ft.Text("Nenhum cliente encontrado.", color=ft.Colors.GREY_500))
+            # Saldos de TODOS os clientes numa consulta só. Antes chamava
+            # saldo_pontos() dentro do laço e esta lista é remontada a cada tecla
+            # digitada na busca: com 300 clientes eram 301 conexões por tecla.
+            saldos = mod_fid.saldos_pontos()
             linhas = []
             for c in clientes:
                 # Reaproveita a tupla de clientes; pega só id(0), nome(1) e telefone(3)
-                # — pula cpf_cnpj(2). Saldo de pontos vem de fidelidade.saldo_pontos().
+                # — pula cpf_cnpj(2).
                 idc, nome, tel = c[0], c[1], c[3]
-                saldo = mod_fid.saldo_pontos(idc)
+                saldo = saldos.get(idc, 0)
                 chip = ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10, vertical=3), border_radius=20,
                     bgcolor=ft.Colors.AMBER_100,
@@ -5750,17 +5933,66 @@ def main(page: ft.Page):
 
         def form_pontos(id_cliente, nome, modo, saldo_atual=None):
             # Mesmo formulário para acumular e resgatar (modo decide). No resgate
-            # passamos saldo_atual para mostrar quanto o cliente tem; o backend
+            # passamos saldo_atual para mostrar quanto o cliente tem; o backend                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
             # recusa (devolve None) se os pontos a resgatar excederem o saldo.
+            # No RESGATE o normal é escolher uma recompensa do CATÁLOGO: assim o preço
+            # em pontos vem da tabela, não da cabeça de quem está no balcão (antes era
+            # campo livre, então cada atendente cobrava o que quisesse pela mesma troca).
+            # "Outro (avulso)" fica como escape para o que não está no catálogo.
             acumular = modo == "acumular"
+            if saldo_atual is None:
+                saldo_atual = mod_fid.saldo_pontos(id_cliente)
+            catalogo = [] if acumular else mod_fid.recompensas()
+
             f_pontos = ft.TextField(label="Pontos *", width=160)
             f_desc = ft.TextField(label="Descrição", width=400,
                                   hint_text="ex.: Bônus / Lavagem grátis")
-            info = (ft.Text(f"Saldo atual: {saldo_atual} pts", size=13, color=ft.Colors.GREY_600)
-                    if not acumular else ft.Container())
             erro = ft.Text("", color=ft.Colors.RED_400, size=12)
 
+            info = ft.Container(
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8), border_radius=8,
+                bgcolor=ft.Colors.AMBER_100,
+                content=ft.Text(f"Saldo atual: {saldo_atual} pontos",
+                                weight=ft.FontWeight.BOLD, color=ft.Colors.AMBER_900))
+
+            dd_recompensa = ft.Dropdown(
+                label="Recompensa *", expand=True,
+                options=[ft.dropdown.Option(
+                    key=str(r[0]),
+                    text=f"{r[1]} — {r[2]} pts" + (f" ({r[4]})" if r[4] else ""))
+                    for r in catalogo] + [ft.dropdown.Option(key="avulso", text="Outro (avulso)")])
+            bloco_avulso = ft.Column(tight=True, spacing=12, visible=False,
+                                     controls=[f_pontos, f_desc])
+
+            def on_recompensa(e):
+                # Avisa a falta de pontos JÁ na escolha, não só depois de clicar em
+                # Resgatar — o cliente está do outro lado do balcão esperando.
+                escolha = dd_key(dd_recompensa)
+                bloco_avulso.visible = escolha == "avulso"
+                erro.value = ""
+                if escolha and escolha != "avulso":
+                    custo = next((r[2] for r in catalogo if str(r[0]) == escolha), 0)
+                    if saldo_atual < custo:
+                        erro.value = (f"Faltam {custo - saldo_atual} ponto(s): "
+                                      f"o cliente tem {saldo_atual} de {custo}.")
+                page.update()
+            dd_recompensa.on_change = on_recompensa
+
             def salvar(e):
+                escolha = None if acumular else dd_key(dd_recompensa)
+
+                # Caminho normal do resgate: o backend confere o saldo e debita o
+                # preço do catálogo (a tela não decide quanto custa).
+                if escolha and escolha != "avulso":
+                    res = mod_fid.resgatar_recompensa(id_cliente, int(escolha))
+                    if not res['ok']:
+                        erro.value = res['motivo']; page.update(); return
+                    fechar_dialog(); atualizar(); sucesso(res['motivo']); return
+
+                if not acumular and catalogo and not escolha:
+                    erro.value = "Escolha a recompensa (ou \"Outro\" para resgate avulso)."
+                    page.update(); return
+
                 txt = (f_pontos.value or "").strip()
                 if not txt.isdigit() or int(txt) <= 0:
                     erro.value = "Pontos deve ser um número inteiro maior que zero."
@@ -5779,18 +6011,127 @@ def main(page: ft.Page):
                 atualizar()
                 sucesso(f"{pts} pontos acumulados." if acumular else f"{pts} pontos resgatados.")
 
+            if acumular:
+                corpo_form = [f_pontos, f_desc, erro]
+            elif catalogo:
+                corpo_form = [info, dd_recompensa, bloco_avulso, erro]
+            else:
+                # Catálogo vazio: cai no avulso e diz ONDE cadastrar a regra, senão
+                # o operador acha que a tela quebrou.
+                corpo_form = [info,
+                              ft.Text("Nenhuma recompensa cadastrada — use \"Regras de pontos\" "
+                                      "para definir o catálogo de trocas.",
+                                      size=12, italic=True, color=ft.Colors.GREY_600),
+                              f_pontos, f_desc, erro]
+
             cor = ft.Colors.GREEN_600 if acumular else COR_PRIMARIA
             abrir_dialog(ft.AlertDialog(
                 modal=True, title_padding=0,
                 title=cabecalho_dialog(
                     f"{'Acumular' if acumular else 'Resgatar'} pontos — {nome}",
                     ft.Icons.ADD_CIRCLE_OUTLINE if acumular else ft.Icons.REDEEM),
-                content=ft.Container(width=420, content=ft.Column(tight=True, spacing=12, controls=[
-                    info, f_pontos, f_desc, erro])),
+                content=ft.Container(width=460, content=ft.Column(tight=True, spacing=12,
+                                                                 controls=corpo_form)),
                 actions=[
                     ft.TextButton("Cancelar", on_click=lambda e: fechar_dialog()),
                     ft.FilledButton("Acumular" if acumular else "Resgatar", on_click=salvar,
                                     style=ft.ButtonStyle(bgcolor=cor)),
+                ]))
+
+        def form_regras(e=None):
+            """
+            Configura as DUAS regras do programa de pontos — antes nenhuma existia:
+            o acúmulo era um default do Python e a troca era número digitado à mão.
+              * quantos pontos o cliente ganha por lavagem;
+              * o catálogo de trocas (o que leva e por quantos pontos).
+            Fica na tela, e não no código, porque promoção muda — mesma decisão da
+            tabela de taxas das maquininhas no Caixa.
+            """
+            pontos_regra, regra_ativa = mod_fid.regra_pontos()
+            f_regra = ft.TextField(label="Pontos por lavagem", width=190,
+                                   value=str(pontos_regra),
+                                   helper=ft.Text("Creditados quando a comanda é finalizada"))
+            sw_ativa = ft.Switch(label="Programa de pontos ativo", value=regra_ativa)
+            erro = ft.Text("", color=ft.Colors.RED_400, size=12)
+            lista = ft.Column(tight=True, spacing=6)
+            f_nova = ft.TextField(label="Nova recompensa", expand=True,
+                                  hint_text="ex.: Lavagem grátis")
+            f_custo = ft.TextField(label="Pontos", width=110)
+
+            def recarregar():
+                lista.controls = []
+                for (rid, rnome, rpts, _sid, snome, rativa) in mod_fid.recompensas(apenas_ativas=False):
+                    lista.controls.append(ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[
+                            ft.Row(spacing=8, controls=[
+                                ft.Icon(ft.Icons.CARD_GIFTCARD, size=16,
+                                        color=COR_ACENTO if rativa else ft.Colors.GREY_400),
+                                ft.Text(rnome + (f" ({snome})" if snome else ""), size=13,
+                                        color=None if rativa else ft.Colors.GREY_500),
+                                ft.Text(f"{rpts} pts", size=13, weight=ft.FontWeight.BOLD,
+                                        color=COR_PRIMARIA if rativa else ft.Colors.GREY_400),
+                            ]),
+                            ft.IconButton(
+                                ft.Icons.BLOCK if rativa else ft.Icons.RESTORE, icon_size=18,
+                                icon_color=ft.Colors.RED_400 if rativa else ft.Colors.GREEN_500,
+                                tooltip="Desativar" if rativa else "Reativar",
+                                on_click=lambda e, i=rid, a=rativa: (
+                                    mod_fid.definir_status_recompensa(i, not a), recarregar())),
+                        ]))
+                if not lista.controls:
+                    lista.controls = [ft.Text("Nenhuma recompensa cadastrada.", size=12,
+                                              italic=True, color=ft.Colors.GREY_500)]
+                page.update()
+
+            def add_recompensa(e):
+                nome_r = (f_nova.value or "").strip()
+                custo = (f_custo.value or "").strip()
+                if not nome_r:
+                    erro.value = "Informe o nome da recompensa."; page.update(); return
+                if not custo.isdigit() or int(custo) <= 0:
+                    erro.value = "Pontos deve ser um inteiro maior que zero."; page.update(); return
+                if mod_fid.salvar_recompensa(nome_r, int(custo)) is None:
+                    erro.value = "Não foi possível salvar a recompensa."; page.update(); return
+                f_nova.value = ""
+                f_custo.value = ""
+                erro.value = ""
+                recarregar()
+
+            def salvar(e):
+                txt = (f_regra.value or "").strip()
+                if not txt.isdigit():
+                    erro.value = "Pontos por lavagem deve ser um número inteiro (0 ou mais)."
+                    page.update(); return
+                if not mod_fid.salvar_regra(int(txt), ativo=sw_ativa.value):
+                    erro.value = "Não foi possível salvar a regra."; page.update(); return
+                fechar_dialog()
+                atualizar()
+                sucesso(f"Regra salva: {int(txt)} ponto(s) por lavagem.")
+
+            recarregar()
+            largura, altura = medida_dialogo(linhas=len(lista.controls), altura_fixa=400)
+            abrir_dialog(ft.AlertDialog(
+                modal=True, title_padding=0,
+                title=cabecalho_dialog("Regras de pontos", ft.Icons.RULE),
+                content=ft.Container(width=largura, height=altura, content=ft.Column(
+                    spacing=14, scroll=ft.ScrollMode.AUTO, controls=[
+                        ft.Text("Acúmulo", size=14, weight=ft.FontWeight.BOLD),
+                        ft.Row([f_regra, sw_ativa], spacing=20),
+                        ft.Divider(),
+                        ft.Text("Catálogo de trocas", size=14, weight=ft.FontWeight.BOLD),
+                        ft.Text("O que o cliente leva e por quantos pontos.", size=12,
+                                color=ft.Colors.GREY_600),
+                        lista,
+                        ft.Row(spacing=10, controls=[
+                            f_nova, f_custo,
+                            ft.FilledButton("Adicionar", icon=ft.Icons.ADD,
+                                            on_click=add_recompensa,
+                                            style=ft.ButtonStyle(bgcolor=COR_ACENTO))]),
+                        erro])),
+                actions=[
+                    ft.TextButton("Fechar", on_click=lambda e: fechar_dialog()),
+                    ft.FilledButton("Salvar regra", on_click=salvar,
+                                    style=ft.ButtonStyle(bgcolor=COR_PRIMARIA)),
                 ]))
 
         def ver_extrato(id_cliente, nome):
@@ -5800,7 +6141,8 @@ def main(page: ft.Page):
                 linhas = []
                 # Tupla = SELECT de fidelidade.extrato_pontos(). id_ordem preenchido
                 # quando os pontos vieram de uma comanda; None se lançamento manual.
-                for (_idm, tipo, pts, id_ordem, desc, data) in movs:
+                # 'recompensa' entra no FIM da tupla (índice 6) — ver extrato_pontos().
+                for (_idm, tipo, pts, id_ordem, desc, data, recompensa) in movs:
                     acum = tipo == "acumulo"   # senão é "resgate"
                     linhas.append(ft.DataRow(cells=[
                         ft.DataCell(ft.Row(spacing=4, controls=[
@@ -5811,7 +6153,12 @@ def main(page: ft.Page):
                                             color=ft.Colors.GREEN_700 if acum else ft.Colors.RED_600,
                                             weight=ft.FontWeight.BOLD)),
                         ft.DataCell(ft.Text(f"#{id_ordem}" if id_ordem else "—")),
-                        ft.DataCell(ft.Text(desc or "—")),
+                        # Troca do catálogo aparece com a etiqueta do prêmio; resgate
+                        # avulso continua mostrando só a descrição digitada.
+                        ft.DataCell(ft.Row(spacing=6, controls=[
+                            ft.Icon(ft.Icons.CARD_GIFTCARD, size=14, color=COR_ACENTO),
+                            ft.Text(recompensa, size=12, weight=ft.FontWeight.BOLD),
+                        ]) if recompensa else ft.Text(desc or "—")),
                         ft.DataCell(ft.Text(fmt_dt(data))),
                     ]))
                 corpo = ft.DataTable(
@@ -5838,8 +6185,14 @@ def main(page: ft.Page):
 
         corpo_tabela.controls = [montar_linhas()]
 
+        pontos_regra, regra_ativa = mod_fid.regra_pontos()
+        etiqueta_regra = (f"{pontos_regra} ponto(s) por lavagem" if regra_ativa
+                          else "programa de pontos desligado")
         return ft.Column(expand=True, spacing=20, controls=[
-            cabecalho("Fidelidade", "Pontos por cliente: acúmulo e resgate"),
+            cabecalho("Fidelidade", f"Pontos por cliente — regra atual: {etiqueta_regra}",
+                      acao=ft.FilledButton("Regras de pontos", icon=ft.Icons.RULE,
+                                           on_click=form_regras,
+                                           style=ft.ButtonStyle(bgcolor=COR_PRIMARIA))),
             ft.Row([campo_busca], spacing=16),
             card_tabela("Clientes e pontos", corpo_tabela),
         ])
