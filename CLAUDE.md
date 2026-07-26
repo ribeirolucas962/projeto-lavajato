@@ -169,13 +169,20 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 
 ## Estado atual / Próximos passos
 
-- Schema completo já criado no `lavajato_db` (23 tabelas, FKs íntegras).
+- Schema completo já criado no `lavajato_db` (25 tabelas, FKs íntegras).
 - **Backend dos 13 módulos completo** (CRUD nos módulos 1–10, 12 e 13; consultas de
   indicadores no 11 — `dashboard.py`).
 - Dados de teste no banco: `categoria_veiculo` (7 portes), `cliente` (id 1), `servico` (id 1 com preços),
   `veiculo` (id 1), `agendamento` (id 1), `ordem_servico` (id 1), `funcionario` (id 1),
   `produto` (id 1), `fornecedor` (id 1), `despesa` (id 1 paga, id 2 em aberto), `caixa` (id 1 fechado),
   `fidelidade_saldo` (cliente 1, 6 pontos), `plano` (id 1) + `assinatura` (id 1).
+  ⚠️ A **`assinatura` (id 1) venceu em 24/07/2026** — desde a revisão de 25/07 ela aparece
+  como "Vencida" e **não libera mais serviço**; é o caso pronto para conferir a tela.
+- **Seeds de configuração** (não são dados de teste — são a regra do negócio, e o
+  `criar_tabelas.sql` os cria com `ON CONFLICT DO NOTHING`, então rodar de novo não
+  sobrescreve o que o dono ajustou pela tela):
+  `taxa_pagamento` (5 formas), `fidelidade_regra` (**1 ponto por lavação**) e
+  `fidelidade_recompensa` ("Lavagem grátis" por 10 pontos).
 - **Módulo 11 (Dashboard): implementado como cards de KPI.** `dashboard.py` concentra as
   consultas (somente leitura): `faturamento('hoje'/'mes')`, `ticket_medio(dias)`,
   `servicos_mais_vendidos(dias, limite)`, `taxa_retorno(dias)`, `tempo_medio_servico(dias)`
