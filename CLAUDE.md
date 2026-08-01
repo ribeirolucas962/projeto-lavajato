@@ -184,6 +184,12 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   `PGPASSWORD` (nunca na linha de comando, que é visível no Gerenciador de Tarefas).
   Confere o arquivo gerado com `pg_restore --list` e guarda 14 dias (mínimo de 5 arquivos).
   Log em `backups/backup.log`. Rodar: `python backup_banco.py`.
+  ⚠️ **`texto_seguro()` não é frescura** (achado pelo `testar_backup.py` em 31/07): o
+  `print` da mensagem de erro do `pg_dump` levantava `UnicodeEncodeError` e derrubava o
+  script **na hora de registrar uma falha** — o console do Windows é cp1252 e a mensagem
+  vem com bytes que viram `�`. O backup quebrava com traceback e o motivo **nunca
+  chegava ao log**, justo no dia em que o servidor caía. É o primo do `lc_messages=C` do
+  `conexao.py`, na direção contrária: lá era LER do Postgres, aqui é ESCREVER.
   ⚠️ **Escolhe o `pg_dump` da MAIOR versão instalada**, não o do PATH: esta máquina tem
   PostgreSQL 13, 16, 17 e 18, e o servidor é 18 — chamar o `pg_dump` 16 falha com
   "server version mismatch". Para forçar outra pasta, `PG_BIN` no `.env`.
@@ -193,6 +199,14 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
   O banco real é só LIDO; o temporário é apagado no `finally` mesmo se falhar no meio, e
   há trava abortando se o nome do banco de teste coincidir com o real. Sem argumento pega
   o backup mais recente. ✅ **Rodado em 31/07/2026: as 25 tabelas / 109 linhas bateram.**
+- `testar_backup.py` — testa os **caminhos de FALHA** do backup (o de sucesso é o
+  `teste_restauracao.py`). Um backup só vale no dia em que algo deu errado, e é esse
+  comportamento que ninguém testa: dump corrompido/truncado/vazio é reprovado e vira
+  `.INVALIDO`; senha errada falha em 0,1s em vez de travar num prompt invisível (é para
+  isso que serve o `--no-password`); a limpeza respeita o piso de 5 e não encosta em
+  arquivo alheio; os códigos de saída 0/1 chegam certos ao Agendador. Desvia a
+  `PASTA_BACKUP` para um diretório temporário — os backups reais nunca são tocados.
+  ✅ **41 checks, 0 falhas em 31/07/2026** — e foi ele que achou o bug do `texto_seguro()`.
 - `requirements.txt` — dependências (psycopg2, bcrypt, flet, reportlab).
 - `documentacao_modulos_lavajato.txt` — especificação funcional dos 13 módulos.
 

@@ -79,6 +79,25 @@ PADRAO_DATA = re.compile(r"^lavajato_(\d{4}-\d{2}-\d{2})_\d{4}\.dump$")
 # LOG
 # ================================================================
 
+def texto_seguro(texto):
+    """
+    Devolve o texto numa versão que o console atual consegue imprimir.
+
+    ⚠️ ISTO NÃO É FRESCURA — sem esta rede o script morre justamente na hora de
+    registrar uma FALHA. O console do Windows costuma estar em cp1252, que não
+    aceita qualquer caractere; e a mensagem de erro do `pg_dump` chega com bytes
+    que viraram `\\ufffd` (o "caractere de substituição") ao serem lidos como
+    UTF-8. Resultado sem a proteção: `print` levanta `UnicodeEncodeError`, o
+    backup quebra com traceback e o **motivo da falha nunca chega ao log** — no
+    dia em que o servidor cai, o log fica mudo.
+
+    É o primo do `lc_messages=C` do `conexao.py`, na direção contrária: lá o
+    problema era LER uma mensagem do Postgres, aqui é ESCREVER.
+    """
+    codec = getattr(sys.stdout, "encoding", None) or "ascii"
+    return texto.encode(codec, "replace").decode(codec, "replace")
+
+
 def registrar(mensagem, tambem_no_arquivo=True):
     """
     Escreve a mensagem na tela e no arquivo backups/backup.log.
@@ -89,7 +108,10 @@ def registrar(mensagem, tambem_no_arquivo=True):
     """
     carimbo = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     linha = f"[{carimbo}] {mensagem}"
-    print(linha)
+    try:
+        print(linha)
+    except UnicodeEncodeError:
+        print(texto_seguro(linha))
 
     if not tambem_no_arquivo:
         return

@@ -36,7 +36,7 @@ from glob import glob
 import psycopg2
 
 from conexao import DB_config
-from backup_banco import achar_executavel, PASTA_BACKUP, PREFIXO, SUFIXO
+from backup_banco import achar_executavel, texto_seguro, PASTA_BACKUP, PREFIXO, SUFIXO
 
 # Nome do banco descartável criado para o teste.
 BANCO_TESTE = "restauracao_teste"
@@ -148,7 +148,9 @@ def main():
         if resultado.returncode != 0:
             print(f"      pg_restore terminou com codigo {resultado.returncode}")
             if resultado.stderr:
-                print("      " + resultado.stderr.strip()[:2000])
+                # texto_seguro: a mensagem do pg_restore pode trazer caracteres
+                # que o console do Windows nao imprime (ver backup_banco.py).
+                print("      " + texto_seguro(resultado.stderr.strip()[:2000]))
         else:
             print("      restaurado sem erros.\n")
 
