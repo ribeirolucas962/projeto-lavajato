@@ -21,9 +21,15 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
 ## Banco de dados
 
 - **Banco EM USO (desde 2026-07-15): PostgreSQL 18.4 no servidor TrueNAS da rede local**
-  — host `192.168.1.19:5432`, banco `dados`, user `nepomuceno` (senha no `.env`).
+  — host `192.168.1.18:5432`, banco `dados`, user `nepomuceno` (senha no `.env`).
   Migração completa feita em 15/07: 22 tabelas + todos os dados copiados do banco local
   (contagens conferidas tabela a tabela). O `.env` aponta pra lá.
+  ⚠️ **O IP é `.18`, não `.19`** (o `.19` estava escrito aqui até 31/07 e é outro aparelho
+  da rede: responde a ping, mas com a porta 5432 fechada). Conferido em 31/07. O que
+  importa é que app e backup leem o mesmo `DB_config` do `conexao.py` — não há risco de
+  um apontar para um servidor e o outro para outro.
+- **Backup:** `python backup_banco.py` gera o dump em `backups/` (ver [Arquivos principais]).
+  Primeira execução em 31/07/2026: 25 tabelas, 236 objetos, dump conferido íntegro.
 - **Banco local antigo (backup/desenvolvimento):** PostgreSQL 16 em `localhost:5432`,
   banco `lavajato_db` (user `postgres`, senha `123456`). Continua intacto com os dados
   de antes da migração; para voltar a usá-lo, troque o bloco comentado no `.env`.
@@ -32,8 +38,18 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
 - Schema completo em `criar_tabelas.sql` (fonte única da verdade). Recriável com
   `python criar_tabelas.py` — é idempotente (`IF NOT EXISTS` / `ON CONFLICT`).
 
-### ⚠️ Atenção: bancos vizinhos no mesmo servidor
-O servidor 5432 hospeda vários projetos: `lavajato_db` (este), `mecanica`,
+### 🚨 Armadilha: o `lavajato_db` VAZIO no TrueNAS (achado em 2026-07-31)
+O servidor do TrueNAS (`192.168.1.18`) tem **três** bancos: `dados` (o nosso, 25 tabelas),
+`postgres` e um **`lavajato_db` com 0 tabelas** — sobra da migração de 15/07.
+O perigo é que `lavajato_db` é exatamente o **valor padrão** do `DB_NAME` no `conexao.py`
+(`os.environ.get('DB_NAME', 'lavajato_db')`). Basta o `.env` perder a linha `DB_NAME`
+para o app conectar nesse banco vazio e **parecer que todos os dados sumiram** — e pior,
+`criar_tabelas.py` criaria as 25 tabelas vazias lá, deixando tudo com cara de funcionando.
+O banco certo do servidor chama-se **`dados`**. Se um dia a tela abrir sem nenhum cliente,
+confira o `DB_NAME` do `.env` ANTES de suspeitar de perda de dados.
+
+### ⚠️ Atenção: bancos vizinhos no servidor LOCAL (localhost)
+O 5432 **da máquina local** hospeda vários projetos: `lavajato_db` (este), `mecanica`,
 `oficina_mecanica`, `receita_premium`, `viagem_milhas`, `postgres`.
 **Sempre confirmar que estamos no `lavajato_db`.** Já houve confusão com o DBeaver
 conectado em `oficina_mecanica` (tabelas no plural `clientes`/`veiculos`, mais
@@ -162,6 +178,21 @@ A especificação detalhada de cada módulo (finalidade, dados, funcionalidades)
 - `dashboard.py` — consultas somente leitura dos indicadores do Dashboard.
 - `app.py` — **interface gráfica (Flet)**: login + 13 telas reaproveitando os módulos de CRUD.
   Rodar com `python app.py`. Logo da marca em `imagen/trucka car.png`.
+- `backup_banco.py` — **backup do banco** via `pg_dump` (formato custom). Só lê do banco;
+  escreve em `backups/` (ignorada pelo git — são dados reais de clientes). Reaproveita o
+  `DB_config` do `conexao.py`, então a credencial continua só no `.env` e a senha vai por
+  `PGPASSWORD` (nunca na linha de comando, que é visível no Gerenciador de Tarefas).
+  Confere o arquivo gerado com `pg_restore --list` e guarda 14 dias (mínimo de 5 arquivos).
+  Log em `backups/backup.log`. Rodar: `python backup_banco.py`.
+  ⚠️ **Escolhe o `pg_dump` da MAIOR versão instalada**, não o do PATH: esta máquina tem
+  PostgreSQL 13, 16, 17 e 18, e o servidor é 18 — chamar o `pg_dump` 16 falha com
+  "server version mismatch". Para forçar outra pasta, `PG_BIN` no `.env`.
+- `teste_restauracao.py` — **prova que o backup volta mesmo**. O `--list` do backup só
+  diz que o arquivo é legível; este restaura o dump num banco descartável
+  (`restauracao_teste`) e compara a contagem de linhas tabela a tabela com o banco real.
+  O banco real é só LIDO; o temporário é apagado no `finally` mesmo se falhar no meio, e
+  há trava abortando se o nome do banco de teste coincidir com o real. Sem argumento pega
+  o backup mais recente. ✅ **Rodado em 31/07/2026: as 25 tabelas / 109 linhas bateram.**
 - `requirements.txt` — dependências (psycopg2, bcrypt, flet, reportlab).
 - `documentacao_modulos_lavajato.txt` — especificação funcional dos 13 módulos.
 

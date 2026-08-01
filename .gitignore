@@ -22,6 +22,9 @@ recibos/
 # Planilhas exportadas pela tela de Clientes
 exportacoes/
 
+# Backups do banco (dados reais de clientes — nunca vão para o GitHub)
+backups/
+
 # Sistema operacional
 Thumbs.db
 desktop.ini
