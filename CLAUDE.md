@@ -21,7 +21,7 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
 ## Banco de dados
 
 - **Banco EM USO (desde 2026-07-15): PostgreSQL 18.4 no servidor TrueNAS da rede local**
-  — host `192.168.1.18:5432`, banco `dados`, user `nepomuceno` (senha no `.env`).
+  — host do TrueNAS na porta 5432 (IP em `DB_HOST` no `.env`), banco `dados`, user `nepomuceno` (senha no `.env`).
   Migração completa feita em 15/07: 22 tabelas + todos os dados copiados do banco local
   (contagens conferidas tabela a tabela). O `.env` aponta pra lá.
   ⚠️ **O IP é `.18`, não `.19`** (o `.19` estava escrito aqui até 31/07 e é outro aparelho
@@ -31,7 +31,7 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
 - **Backup:** `python backup_banco.py` gera o dump em `backups/` (ver [Arquivos principais]).
   Primeira execução em 31/07/2026: 25 tabelas, 236 objetos, dump conferido íntegro.
 - **Banco local antigo (backup/desenvolvimento):** PostgreSQL 16 em `localhost:5432`,
-  banco `lavajato_db` (user `postgres`, senha `123456`). Continua intacto com os dados
+  banco `lavajato_db` (user `postgres`, senha no `.env`). Continua intacto com os dados
   de antes da migração; para voltar a usá-lo, troque o bloco comentado no `.env`.
 - Conexão centralizada em `conexao.py` → função `conectar()` retorna a conexão (ou `None`).
   Variáveis de ambiente do terminal **têm prioridade** sobre o `.env` (`os.environ.setdefault`).
@@ -39,7 +39,7 @@ Cliente: **Truck Center Lavação**. Autor: Lucas Ribeiro Nepomuceno de Almeida 
   `python criar_tabelas.py` — é idempotente (`IF NOT EXISTS` / `ON CONFLICT`).
 
 ### 🚨 Armadilha: o `lavajato_db` VAZIO no TrueNAS (achado em 2026-07-31)
-O servidor do TrueNAS (`192.168.1.18`) tem **três** bancos: `dados` (o nosso, 25 tabelas),
+O servidor do TrueNAS tem **três** bancos: `dados` (o nosso, 25 tabelas),
 `postgres` e um **`lavajato_db` com 0 tabelas** — sobra da migração de 15/07.
 O perigo é que `lavajato_db` é exatamente o **valor padrão** do `DB_NAME` no `conexao.py`
 (`os.environ.get('DB_NAME', 'lavajato_db')`). Basta o `.env` perder a linha `DB_NAME`

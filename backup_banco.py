@@ -31,8 +31,8 @@ COMO RESTAURAR (o dia em que isto importa)
 O arquivo sai no formato "custom" do PostgreSQL (comprimido), que se restaura
 com `pg_restore` — NÃO com `psql`. Para jogar num banco vazio:
 
-    createdb  -h 192.168.1.18 -U nepomuceno restauracao_teste
-    pg_restore -h 192.168.1.18 -U nepomuceno -d restauracao_teste --no-owner ARQUIVO.dump
+    createdb  -h IP_DO_TRUENAS -U nepomuceno restauracao_teste
+    pg_restore -h IP_DO_TRUENAS -U nepomuceno -d restauracao_teste --no-owner ARQUIVO.dump
 
 ⚠️ Restaure SEMPRE num banco novo primeiro (como no exemplo acima). Restaurar
 por cima do banco em produção é como testar o freio descendo a serra.
